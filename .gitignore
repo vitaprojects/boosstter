@@ -1,0 +1,29 @@
+# Flutter SDK (downloaded separately, not source code)
+flutter/
+
+# Build artifacts
+booster_app/build/
+booster_app/.dart_tool/
+booster_app/.flutter-plugins
+booster_app/.flutter-plugins-dependencies
+
+# Dart pub cache
+.pub-cache/
+
+# Android local properties (machine-specific)
+booster_app/android/local.properties
+
+# iOS
+booster_app/ios/Pods/
+booster_app/ios/.symlinks/
+
+# macOS
+booster_app/macos/Pods/
+booster_app/macos/.symlinks/
+
+# Node modules (Firebase Functions)
+booster_app/functions/node_modules/
+
+# Firebase secrets / local config
+.env
+.env.*
