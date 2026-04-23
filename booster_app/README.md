@@ -138,6 +138,13 @@ cd /workspaces/boosstter/booster_app
 ./tools/save_debug_apk.sh
 ```
 
+Save and keep only the newest 10 backups (default behavior):
+
+```bash
+cd /workspaces/boosstter/booster_app
+./tools/save_debug_apk.sh --keep 10
+```
+
 Restore the latest saved APK back into build output:
 
 ```bash
@@ -150,6 +157,13 @@ List saved APK backups:
 ```bash
 cd /workspaces/boosstter/booster_app
 ./tools/restore_or_install_saved_apk.sh --list
+```
+
+By default, restore verifies checksum before copying. You can skip that only if needed:
+
+```bash
+cd /workspaces/boosstter/booster_app
+./tools/restore_or_install_saved_apk.sh --no-verify
 ```
 
 Restore and install to a connected device/emulator:
