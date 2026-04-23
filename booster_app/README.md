@@ -120,6 +120,45 @@ cd /workspaces/boosstter/booster_app
 ./tools/reset_and_seed_emulators.sh
 ```
 
+### Save APK Builds For Fast Resume
+
+To avoid losing work, you can save your built APKs into `/workspaces/boosstter/saved-builds`.
+
+Build and auto-save a timestamped backup:
+
+```bash
+cd /workspaces/boosstter/booster_app
+./tools/build_and_save_debug_apk.sh
+```
+
+Save the current debug APK without rebuilding:
+
+```bash
+cd /workspaces/boosstter/booster_app
+./tools/save_debug_apk.sh
+```
+
+Restore the latest saved APK back into build output:
+
+```bash
+cd /workspaces/boosstter/booster_app
+./tools/restore_or_install_saved_apk.sh
+```
+
+List saved APK backups:
+
+```bash
+cd /workspaces/boosstter/booster_app
+./tools/restore_or_install_saved_apk.sh --list
+```
+
+Restore and install to a connected device/emulator:
+
+```bash
+cd /workspaces/boosstter/booster_app
+./tools/restore_or_install_saved_apk.sh --install
+```
+
 ### Stripe Payment Setup
 
 The customer payment step now uses Stripe PaymentSheet with a Firebase callable
