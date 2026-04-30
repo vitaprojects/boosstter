@@ -40,6 +40,7 @@ dependencies:
   cloud_firestore: ^4.17.0
   cloud_functions: ^4.7.6
   firebase_database: ^10.5.0
+  firebase_messaging: ^14.9.4
   flutter_stripe: ^11.3.0
 
   google_maps_flutter: ^2.6.0
@@ -67,6 +68,9 @@ flutter:
   # included with your application, so that you can use the icons in
   # the material Icons class.
   uses-material-design: true
+
+  assets:
+    - assets/app_icon_source.png
 
   # To add assets to your application, add an assets section, like this:
   # assets:

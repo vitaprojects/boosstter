@@ -2,214 +2,331 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 
-import 'booster_logo.dart';
-import 'login_screen.dart';
+import 'app_shell.dart';
+import 'boost_service_options.dart';
 import 'customer_screen.dart';
 import 'driver_screen.dart';
+import 'provider_status_screen.dart';
+import 'profile_screen.dart';
 
 class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key});
+  final List<String>? selectedBoostTypes;
+
+  const HomeScreen({this.selectedBoostTypes, super.key});
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  bool _isSelecting = false;
+  static const List<_MainTabVisual> _tabVisuals = <_MainTabVisual>[
+    _MainTabVisual(
+      label: 'Home',
+      icon: Icons.home_outlined,
+      activeIcon: Icons.home,
+      color: Color(0xFF5500FF),
+    ),
+    _MainTabVisual(
+      label: 'Offer',
+      icon: Icons.tune_outlined,
+      activeIcon: Icons.tune,
+      color: Color(0xFFEA3DFF),
+    ),
+    _MainTabVisual(
+      label: 'Orders',
+      icon: Icons.radar_outlined,
+      activeIcon: Icons.radar,
+      color: Color(0xFF00E5FF),
+    ),
+    _MainTabVisual(
+      label: 'Profile',
+      icon: Icons.person_outline,
+      activeIcon: Icons.person,
+      color: Color(0xFFFFD60A),
+    ),
+  ];
 
-  Future<void> _openNeedBoost() async {
-    await _setRoleForCurrentUser('customer');
-    if (!mounted) return;
-    Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => const CustomerScreen()),
-    );
+  int _selectedTabIndex = 0;
+  int _requestTabVersion = 0;
+
+  void _onMainTabSelected(int index) {
+    if (index == 0) {
+      setState(() {
+        _selectedTabIndex = 0;
+        _requestTabVersion++;
+      });
+      return;
+    }
+
+    if (_selectedTabIndex == index) {
+      return;
+    }
+    setState(() {
+      _selectedTabIndex = index;
+    });
   }
 
-  Future<void> _openGiveBoost() async {
-    await _setRoleForCurrentUser('driver');
-    if (!mounted) return;
-    Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => const DriverScreen()),
-    );
+  @override
+  void initState() {
+    super.initState();
+    _saveBoostTypes();
   }
 
-  Future<void> _setRoleForCurrentUser(String role) async {
+  List<Widget> _buildTabScreens() {
+    return <Widget>[
+      _MainServiceHub(
+        key: ValueKey<String>('request-$_requestTabVersion'),
+      ),
+      const ProviderStatusScreen(showBottomNav: false),
+      const DriverScreen(showBottomNav: false),
+      const ProfileScreen(showBottomNav: false),
+    ];
+  }
+
+  Future<void> _saveBoostTypes() async {
+    if (widget.selectedBoostTypes == null || widget.selectedBoostTypes!.isEmpty) {
+      return;
+    }
+    
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
 
-    setState(() => _isSelecting = true);
     try {
-      await FirebaseFirestore.instance.collection('users').doc(user.uid).set({
-        'userId': user.uid,
-        'email': user.email,
-        'role': role,
-        'isAvailable': false,
-        'latitude': 0.0,
-        'longitude': 0.0,
-        'isSubscribed': false,
-        'updatedAt': FieldValue.serverTimestamp(),
-      }, SetOptions(merge: true));
+      await FirebaseFirestore.instance.collection('users').doc(user.uid).update({
+        'boostTypes': widget.selectedBoostTypes,
+      });
     } catch (_) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Could not sync account mode. Continuing anyway.'),
-          ),
-        );
-      }
-    } finally {
-      if (mounted) setState(() => _isSelecting = false);
+      // Silently fail
     }
+  }
+
+  Widget _buildNavIcon(_MainTabVisual tab, bool isSelected) {
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 180),
+      curve: Curves.easeOut,
+      padding: const EdgeInsets.all(6),
+      decoration: BoxDecoration(
+        color: tab.color.withValues(alpha: isSelected ? 0.22 : 0.1),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+          color: tab.color.withValues(alpha: isSelected ? 0.65 : 0.2),
+          width: 1.2,
+        ),
+      ),
+      child: Icon(
+        isSelected ? tab.activeIcon : tab.icon,
+        color: isSelected ? tab.color : const Color(0xFF8A8A9A),
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            BoosterLogo(size: 30, showWordmark: false),
-            SizedBox(width: 10),
-            Text('Booster'),
-          ],
-        ),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.logout),
-            onPressed: () async {
-              await FirebaseAuth.instance.signOut();
-              if (context.mounted) {
-                Navigator.of(context).pushAndRemoveUntil(
-                  MaterialPageRoute(builder: (_) => const LoginScreen()),
-                  (route) => false,
-                );
-              }
-            },
-          ),
-        ],
+      extendBody: true,
+      body: IndexedStack(
+        index: _selectedTabIndex,
+        children: _buildTabScreens(),
       ),
-      body: SafeArea(
-        child: ListView(
-          padding: const EdgeInsets.all(20),
-          children: [
-            const BoosterLogo(size: 64, showWordmark: true),
-            const SizedBox(height: 24),
-            Text(
-              'Choose what you want to do',
-              style: Theme.of(context).textTheme.headlineSmall,
-            ),
-            const SizedBox(height: 8),
-            Text(
-              'After login, pick one flow: request help or provide help.',
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    color: Colors.grey[400],
-                  ),
-            ),
-            const SizedBox(height: 24),
-            _HomeActionCard(
-              icon: Icons.bolt,
-              title: 'Need a Boost',
-              subtitle: 'Request roadside assistance and track the next steps.',
-              onTap: _isSelecting ? null : _openNeedBoost,
-            ),
-            const SizedBox(height: 14),
-            _HomeActionCard(
-              icon: Icons.directions_car,
-              title: 'Offer a Boost',
-              subtitle: 'Go available and receive nearby boost requests.',
-              onTap: _isSelecting ? null : _openGiveBoost,
-            ),
-            if (_isSelecting) ...[
-              const SizedBox(height: 20),
-              const Center(child: CircularProgressIndicator()),
-            ],
-            const SizedBox(height: 20),
-            Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: const Color(0xFF1E1E1E),
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: Colors.white10),
-              ),
-              child: Row(
-                children: [
-                  const Icon(Icons.info_outline, color: Color(0xFF06B6D4)),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Text(
-                      'Need a Boost opens the customer map/request flow. Offer a Boost opens the driver availability/request flow.',
-                      style: Theme.of(context).textTheme.bodySmall,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
+      bottomNavigationBar: MediaQuery.removePadding(
+        context: context,
+        removeBottom: true,
+        child: BottomNavigationBar(
+          type: BottomNavigationBarType.fixed,
+          selectedItemColor: const Color(0xFF5500FF),
+          unselectedItemColor: const Color(0xFFAAAAAA),
+          backgroundColor: Colors.white,
+          currentIndex: _selectedTabIndex,
+          onTap: _onMainTabSelected,
+          items: List<BottomNavigationBarItem>.generate(_tabVisuals.length, (index) {
+            final tab = _tabVisuals[index];
+            return BottomNavigationBarItem(
+              icon: _buildNavIcon(tab, false),
+              activeIcon: _buildNavIcon(tab, true),
+              label: tab.label,
+            );
+          }),
         ),
       ),
     );
   }
 }
 
-class _HomeActionCard extends StatelessWidget {
-  const _HomeActionCard({
+class _MainTabVisual {
+  const _MainTabVisual({
+    required this.label,
     required this.icon,
-    required this.title,
-    required this.subtitle,
-    this.onTap,
+    required this.activeIcon,
+    required this.color,
   });
 
+  final String label;
   final IconData icon;
-  final String title;
-  final String subtitle;
-  final VoidCallback? onTap;
+  final IconData activeIcon;
+  final Color color;
+}
+
+class _MainServiceHub extends StatelessWidget {
+  const _MainServiceHub({super.key});
+
+  void _openNeedBoost(BuildContext context) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => const CustomerScreen(
+          initialServiceType: serviceTypeBoost,
+          showBottomNav: true,
+        ),
+      ),
+    );
+  }
+
+  void _openNeedTow(BuildContext context) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => const CustomerScreen(
+          initialServiceType: serviceTypeTow,
+          showBottomNav: true,
+        ),
+      ),
+    );
+  }
+
+  void _openOfferService(BuildContext context) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => const ProviderStatusScreen(showBottomNav: true),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      color: const Color(0xFF1E1E1E),
-      borderRadius: BorderRadius.circular(18),
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(18),
-        child: Padding(
-          padding: const EdgeInsets.all(18),
-          child: Row(
+    return BoosterPageBackground(
+      child: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Container(
-                width: 52,
-                height: 52,
-                decoration: BoxDecoration(
-                  color: const Color(0xFF6366F1).withValues(alpha: 0.16),
-                  borderRadius: BorderRadius.circular(14),
-                ),
-                child: Icon(icon, color: const Color(0xFF6366F1)),
-              ),
-              const SizedBox(width: 16),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(title, style: Theme.of(context).textTheme.titleMedium),
-                    const SizedBox(height: 4),
-                    Text(
-                      subtitle,
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                            color: Colors.grey[400],
-                          ),
+              Text(
+                'How would you like to use Booster?',
+                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                      fontWeight: FontWeight.w700,
                     ),
-                  ],
-                ),
               ),
-              const SizedBox(width: 8),
-              Icon(
-                Icons.chevron_right,
-                color: onTap == null ? Colors.white24 : Colors.white70,
+              const SizedBox(height: 8),
+              Text(
+                'Choose a service to continue to the detailed flow.',
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      color: const Color(0xFF8A8A9A),
+                    ),
+              ),
+              const SizedBox(height: 18),
+              _ServiceChoiceCard(
+                title: 'Need a Boost?',
+                subtitle:
+                    'Request roadside battery assistance and match with nearby providers.',
+                icon: Icons.bolt,
+                accent: const Color(0xFF5500FF),
+                cta: 'Start Boost Request',
+                onTap: () => _openNeedBoost(context),
+              ),
+              const SizedBox(height: 12),
+              _ServiceChoiceCard(
+                title: 'Need a Tow?',
+                subtitle:
+                    'Request tow support and provide your pickup details for dispatch.',
+                icon: Icons.local_shipping,
+                accent: const Color(0xFF0EA5E9),
+                cta: 'Start Tow Request',
+                onTap: () => _openNeedTow(context),
+              ),
+              const SizedBox(height: 12),
+              _ServiceChoiceCard(
+                title: 'Offer a Boost or Tow?',
+                subtitle:
+                    'Set your provider profile, go available, and receive nearby jobs.',
+                icon: Icons.support_agent,
+                accent: const Color(0xFF16A34A),
+                cta: 'Open Provider Setup',
+                onTap: () => _openOfferService(context),
               ),
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _ServiceChoiceCard extends StatelessWidget {
+  const _ServiceChoiceCard({
+    required this.title,
+    required this.subtitle,
+    required this.icon,
+    required this.accent,
+    required this.cta,
+    required this.onTap,
+  });
+
+  final String title;
+  final String subtitle;
+  final IconData icon;
+  final Color accent;
+  final String cta;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return BoosterSurfaceCard(
+      padding: const EdgeInsets.all(16),
+      borderColor: accent.withValues(alpha: 0.25),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  color: accent.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Icon(icon, color: accent),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  title,
+                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Text(
+            subtitle,
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: const Color(0xFF8A8A9A),
+                ),
+          ),
+          const SizedBox(height: 14),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              onPressed: onTap,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: accent,
+                foregroundColor: Colors.white,
+              ),
+              icon: const Icon(Icons.arrow_forward),
+              label: Text(cta),
+            ),
+          ),
+        ],
       ),
     );
   }

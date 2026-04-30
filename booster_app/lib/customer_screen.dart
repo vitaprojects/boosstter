@@ -5,13 +5,35 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:geocoding/geocoding.dart';
+import 'app_shell.dart';
 import 'login_screen.dart';
-import 'paywall_screen.dart';
 import 'stripe_payment_service.dart';
+import 'boost_service_options.dart';
+import 'offline_retry_queue.dart';
+import 'request_lifecycle.dart';
+import 'home_screen.dart';
+import 'provider_status_screen.dart';
+import 'driver_screen.dart';
+import 'profile_screen.dart';
+import 'main_bottom_nav.dart';
+import 'customer_order_tracker_screen.dart';
+import 'subscription_access.dart';
+
+enum _CustomerStep { vehicle, location, request, boosters }
+
+enum _LocationSelectionTab { current, map }
 
 class CustomerScreen extends StatefulWidget {
-  const CustomerScreen({super.key});
+  const CustomerScreen({
+    this.initialServiceType = serviceTypeBoost,
+    this.showBottomNav = true,
+    super.key,
+  });
+
+  final String initialServiceType;
+  final bool showBottomNav;
 
   @override
   State<CustomerScreen> createState() => _CustomerScreenState();
@@ -22,71 +44,484 @@ class _CustomerScreenState extends State<CustomerScreen> {
   bool _isLoading = true;
   bool _hasLocationPermission = false;
   bool _isSearchingBoosters = false;
+  bool _isResolvingLocation = false;
   GoogleMapController? _mapController;
+  GoogleMapController? _locationPickerMapController;
+  final TextEditingController _mapAddressController = TextEditingController();
 
   String? _pickupAddress;
   LatLng? _pickupLatLng;
+  LatLng? _detectedCurrentLatLng;
+  String? _detectedCurrentAddress;
+  LatLng? _locationPickerLatLng;
+  String? _locationPickerAddress;
+  String _serviceType = serviceTypeBoost;
   String? _vehicleType;
   String? _plugType;
+  String? _towType;
   final List<_NearbyBooster> _nearbyBoosters = <_NearbyBooster>[];
+  _CustomerStep _currentStep = _CustomerStep.vehicle;
+  _LocationSelectionTab _locationSelectionTab = _LocationSelectionTab.current;
 
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _requestWatchSub;
+  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _driverWatchSub;
   String? _activeRequestId;
   String? _activeRequestStatus;
   String? _activeDriverId;
+  double? _activeDriverDistanceKm;
+  int? _activeDriverEtaMinutes;
+  LatLng? _activeDriverLatLng;
+  DateTime? _activeDriverLastUpdatedAt;
+  bool _isDriverTrackingConnected = false;
+  DateTime? _activeRequestCreatedAt;
+  DateTime? _activeRequestStatusUpdatedAt;
+  late final Timer _statusTicker;
+  Timer? _requestWatchRetryTimer;
+  Timer? _driverWatchRetryTimer;
+
+  static const LatLng _defaultMapCenter = LatLng(37.7749, -122.4194);
 
   bool get _isWaitingForBooster {
     return _activeRequestStatus == 'pending' ||
+        _activeRequestStatus == 'searching' ||
         _activeRequestStatus == 'awaiting_payment' ||
         _activeRequestStatus == 'paid' ||
         _activeRequestStatus == 'accepted' ||
-        _activeRequestStatus == 'en_route';
+        _activeRequestStatus == 'en_route' ||
+        _activeRequestStatus == 'arrived';
   }
 
   @override
   void initState() {
     super.initState();
+    _serviceType = widget.initialServiceType;
+    _statusTicker = Timer.periodic(const Duration(seconds: 30), (_) {
+      if (mounted) {
+        setState(() {});
+      }
+    });
     _getCurrentLocation();
     _watchLatestRequest();
   }
 
   @override
   void dispose() {
+    _statusTicker.cancel();
+    _requestWatchRetryTimer?.cancel();
+    _driverWatchRetryTimer?.cancel();
     _requestWatchSub?.cancel();
+    _driverWatchSub?.cancel();
+    _mapController?.dispose();
+    _locationPickerMapController?.dispose();
+    _mapAddressController.dispose();
     super.dispose();
+  }
+
+  DateTime? _toDateTime(dynamic value) {
+    if (value is Timestamp) {
+      return value.toDate();
+    }
+    if (value is DateTime) {
+      return value;
+    }
+    return null;
+  }
+
+  void _scheduleRequestWatchRetry() {
+    _requestWatchRetryTimer?.cancel();
+    _requestWatchRetryTimer = Timer(const Duration(seconds: 3), _watchLatestRequest);
+  }
+
+  void _scheduleDriverWatchRetry(String? driverId) {
+    _driverWatchRetryTimer?.cancel();
+    if (driverId == null) return;
+    _driverWatchRetryTimer =
+        Timer(const Duration(seconds: 3), () => _watchActiveDriverLocation(driverId));
+  }
+
+  bool _isRetryableSyncError(Object error) {
+    if (error is FirebaseException) {
+      return error.code == 'unavailable' ||
+          error.code == 'network-request-failed' ||
+          error.code == 'deadline-exceeded';
+    }
+    final message = error.toString().toLowerCase();
+    return message.contains('network') ||
+        message.contains('unavailable') ||
+        message.contains('timed out') ||
+        message.contains('failed host lookup');
+  }
+
+  Future<void> _transitionRequestStatus({
+    required String requestId,
+    required RequestStatus to,
+    Map<String, dynamic>? extra,
+  }) async {
+    Future<void> runTransition() async {
+      final requestRef = FirebaseFirestore.instance.collection('requests').doc(requestId);
+      await FirebaseFirestore.instance.runTransaction((txn) async {
+        final snap = await txn.get(requestRef);
+        if (!snap.exists) {
+          throw Exception('Boost request not found.');
+        }
+        final data = snap.data() ?? <String, dynamic>{};
+        final from = requestStatusFromString((data['status'] ?? '').toString());
+        if (!canTransitionRequestStatus(from, to)) {
+          throw Exception('Invalid request status transition: ${from.value} -> ${to.value}');
+        }
+
+        final patch = <String, dynamic>{
+          ...buildStatusTransitionPatch(to: to),
+        };
+        if (extra != null) {
+          patch.addAll(extra);
+        }
+        txn.update(requestRef, patch);
+      });
+    }
+
+    try {
+      await runTransition();
+    } catch (error) {
+      if (_isRetryableSyncError(error)) {
+        OfflineRetryQueue.instance.enqueue(
+          key: 'request-transition-$requestId-${to.value}',
+          action: runTransition,
+        );
+        throw Exception('Offline: action queued and will retry automatically.');
+      }
+      rethrow;
+    }
+  }
+
+  Future<String> _resolveAddress(
+    double latitude,
+    double longitude, {
+    required String fallbackLabel,
+  }) async {
+    var address =
+        '$fallbackLabel (${latitude.toStringAsFixed(5)}, ${longitude.toStringAsFixed(5)})';
+
+    try {
+      final places = await placemarkFromCoordinates(latitude, longitude);
+      if (places.isNotEmpty) {
+        final p = places.first;
+        final formatted = [
+          if ((p.street ?? '').isNotEmpty) p.street,
+          if ((p.locality ?? '').isNotEmpty) p.locality,
+          if ((p.administrativeArea ?? '').isNotEmpty) p.administrativeArea,
+        ].whereType<String>().join(', ');
+        if (formatted.isNotEmpty) {
+          address = formatted;
+        }
+      }
+    } catch (_) {
+      // Keep fallback text if reverse-geocoding fails.
+    }
+
+    return address;
+  }
+
+  void _selectVehicleType(String vehicleType) {
+    setState(() {
+      _vehicleType = vehicleType;
+      if (vehicleType == _regularVehicleType) {
+        _plugType = null;
+      } else {
+        _plugType ??= _plugTypes.first;
+      }
+    });
+  }
+
+  void _selectTowType(String towType) {
+    setState(() => _towType = towType);
+  }
+
+  int get _serviceBaseAmountCents {
+    if (_serviceType == serviceTypeTow) {
+      return towBaseAmountForType(_towType ?? towTypeCar);
+    }
+    return boostServiceBaseCadCents;
+  }
+
+  int get _serviceTaxAmountCents {
+    if (_serviceType == serviceTypeTow) {
+      return taxAmountForBase(_serviceBaseAmountCents);
+    }
+    return boostServiceTaxCadCents;
+  }
+
+  int get _serviceTotalAmountCents => _serviceBaseAmountCents + _serviceTaxAmountCents;
+
+  String get _serviceSummaryLabel {
+    if (_serviceType == serviceTypeTow) {
+      return towTypeLabel(_towType ?? towTypeCar);
+    }
+    if (_vehicleType == _electricVehicleType) {
+      return 'Electric Car Boost${_plugType == null ? '' : ' • $_plugType'}';
+    }
+    return 'Regular Car Boost';
+  }
+
+  bool _vehicleSelectionIsValid() {
+    if (_serviceType == serviceTypeTow) {
+      if (_towType == null) {
+        _showErrorSnackBar('Choose tow type to continue', Icons.local_shipping);
+        return false;
+      }
+      return true;
+    }
+
+    if (_vehicleType == null) {
+      _showErrorSnackBar('Choose Regular Car Boost or Electric Car Boost', Icons.ev_station);
+      return false;
+    }
+
+    if (_vehicleType == _electricVehicleType && _plugType == null) {
+      _showErrorSnackBar('Select your EV plug type to continue', Icons.bolt);
+      return false;
+    }
+
+    return true;
+  }
+
+  void _continueToLocationStep() {
+    if (!_vehicleSelectionIsValid()) {
+      return;
+    }
+
+    setState(() => _currentStep = _CustomerStep.location);
+    if (_locationSelectionTab == _LocationSelectionTab.current) {
+      _prepareCurrentLocationPreview();
+    }
+  }
+
+  Future<void> _prepareCurrentLocationPreview() async {
+    if (_currentPosition == null || _isResolvingLocation) {
+      return;
+    }
+
+    setState(() => _isResolvingLocation = true);
+    final latLng = LatLng(
+      _currentPosition!.latitude,
+      _currentPosition!.longitude,
+    );
+    final address = await _resolveAddress(
+      latLng.latitude,
+      latLng.longitude,
+      fallbackLabel: 'Current location',
+    );
+
+    if (!mounted) return;
+    setState(() {
+      _detectedCurrentLatLng = latLng;
+      _detectedCurrentAddress = address;
+      _isResolvingLocation = false;
+    });
+  }
+
+  Future<void> _saveDetectedCurrentLocation() async {
+    if (_detectedCurrentLatLng == null || _detectedCurrentAddress == null) {
+      await _prepareCurrentLocationPreview();
+    }
+
+    if (_detectedCurrentLatLng == null || _detectedCurrentAddress == null) {
+      if (mounted) {
+        _showErrorSnackBar('Could not detect your current location', Icons.my_location);
+      }
+      return;
+    }
+
+    setState(() {
+      _pickupLatLng = _detectedCurrentLatLng;
+      _pickupAddress = _detectedCurrentAddress;
+      _nearbyBoosters.clear();
+      _currentStep = _CustomerStep.request;
+    });
+  }
+
+  Future<void> _selectLocationFromMap(LatLng latLng) async {
+    setState(() {
+      _locationPickerLatLng = latLng;
+      _locationPickerAddress =
+          'Selected location (${latLng.latitude.toStringAsFixed(5)}, ${latLng.longitude.toStringAsFixed(5)})';
+    });
+
+    final address = await _resolveAddress(
+      latLng.latitude,
+      latLng.longitude,
+      fallbackLabel: 'Selected location',
+    );
+
+    if (!mounted) return;
+    setState(() => _locationPickerAddress = address);
+  }
+
+  Future<void> _searchAddressOnMap() async {
+    FocusManager.instance.primaryFocus?.unfocus();
+
+    final input = _mapAddressController.text.trim();
+    if (input.isEmpty) {
+      _showErrorSnackBar('Enter an address to search on the map', Icons.search);
+      return;
+    }
+
+    setState(() => _isResolvingLocation = true);
+    try {
+      final locations = await locationFromAddress(input);
+      if (locations.isEmpty) {
+        _showErrorSnackBar('Address not found', Icons.search_off);
+        return;
+      }
+
+      final picked = LatLng(locations.first.latitude, locations.first.longitude);
+      await _locationPickerMapController?.animateCamera(
+        CameraUpdate.newLatLng(picked),
+      );
+      await _selectLocationFromMap(picked);
+    } catch (_) {
+      if (mounted) {
+        _showErrorSnackBar('Could not search this address', Icons.cloud_off);
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isResolvingLocation = false);
+      }
+    }
+  }
+
+  void _saveMapLocation() {
+    if (_locationPickerLatLng == null || _locationPickerAddress == null) {
+      _showErrorSnackBar('Search or tap on the map to choose a location', Icons.place);
+      return;
+    }
+
+    setState(() {
+      _pickupLatLng = _locationPickerLatLng;
+      _pickupAddress = _locationPickerAddress;
+      _nearbyBoosters.clear();
+      _currentStep = _CustomerStep.request;
+    });
+  }
+
+  void _goBackOneStep() {
+    switch (_currentStep) {
+      case _CustomerStep.vehicle:
+        if (Navigator.of(context).canPop()) {
+          Navigator.of(context).pop();
+        } else {
+          Navigator.of(context).pushReplacement(
+            MaterialPageRoute(builder: (_) => const HomeScreen()),
+          );
+        }
+        break;
+      case _CustomerStep.location:
+        setState(() => _currentStep = _CustomerStep.vehicle);
+        break;
+      case _CustomerStep.request:
+        setState(() => _currentStep = _CustomerStep.location);
+        break;
+      case _CustomerStep.boosters:
+        setState(() => _currentStep = _CustomerStep.request);
+        break;
+    }
+  }
+
+  void _onTabSelected(MainTab tab) {
+    if (tab == MainTab.request) return;
+
+    final Widget destination;
+    switch (tab) {
+      case MainTab.home:
+        destination = const HomeScreen();
+        break;
+      case MainTab.request:
+        return;
+      case MainTab.provider:
+        destination = const ProviderStatusScreen();
+        break;
+      case MainTab.orders:
+        destination = const DriverScreen();
+        break;
+      case MainTab.profile:
+        destination = const ProfileScreen();
+        break;
+    }
+
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute(builder: (_) => destination),
+    );
+  }
+
+  void _openActiveRequestTracker() {
+    if (_activeRequestId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No active request to track.')),
+      );
+      return;
+    }
+
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => CustomerOrderTrackerScreen(requestId: _activeRequestId!),
+      ),
+    );
+  }
+
+  Position _defaultPosition() {
+    return Position(
+      latitude: 37.7749,
+      longitude: -122.4194,
+      timestamp: DateTime.now(),
+      accuracy: 0,
+      altitude: 0,
+      heading: 0,
+      speed: 0,
+      speedAccuracy: 0,
+      altitudeAccuracy: 0,
+      headingAccuracy: 0,
+    );
+  }
+
+  void _setFallbackLocation({required bool hasPermission}) {
+    if (!mounted) return;
+    setState(() {
+      _hasLocationPermission = hasPermission;
+      _currentPosition = _defaultPosition();
+      _isLoading = false;
+    });
   }
 
   Future<void> _getCurrentLocation() async {
     try {
-      LocationPermission permission = await Geolocator.requestPermission();
-      
-      if (permission == LocationPermission.denied || 
+      final serviceEnabled = await Geolocator.isLocationServiceEnabled().timeout(
+        const Duration(seconds: 5),
+      );
+      if (!serviceEnabled) {
+        _setFallbackLocation(hasPermission: false);
+        return;
+      }
+
+      LocationPermission permission = await Geolocator.checkPermission().timeout(
+        const Duration(seconds: 5),
+      );
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission().timeout(
+          const Duration(seconds: 8),
+        );
+      }
+
+      if (permission == LocationPermission.denied ||
           permission == LocationPermission.deniedForever) {
-        // Use default location if permission denied
-        setState(() {
-          _hasLocationPermission = false;
-          _currentPosition = Position(
-            latitude: 37.7749, // Default to San Francisco
-            longitude: -122.4194,
-            timestamp: DateTime.now(),
-            accuracy: 0,
-            altitude: 0,
-            heading: 0,
-            speed: 0,
-            speedAccuracy: 0,
-            altitudeAccuracy: 0,
-            headingAccuracy: 0,
-          );
-          _isLoading = false;
-          _updateMarkers();
-        });
+        _setFallbackLocation(hasPermission: false);
         return;
       }
 
       Position position = await Geolocator.getCurrentPosition(
         desiredAccuracy: LocationAccuracy.high,
-      );
+      ).timeout(const Duration(seconds: 12));
 
+      if (!mounted) return;
       setState(() {
         _hasLocationPermission = true;
         _currentPosition = position;
@@ -104,82 +539,98 @@ class _CustomerScreenState extends State<CustomerScreen> {
 
       // Location updated successfully
     } catch (e) {
-      // Use default location on error
-      setState(() {
-        _hasLocationPermission = false;
-        _currentPosition = Position(
-          latitude: 37.7749,
-          longitude: -122.4194,
-          timestamp: DateTime.now(),
-          accuracy: 0,
-          altitude: 0,
-          heading: 0,
-          speed: 0,
-          speedAccuracy: 0,
-          altitudeAccuracy: 0,
-          headingAccuracy: 0,
-        );
-        _isLoading = false;
-        _updateMarkers();
-      });
+      _setFallbackLocation(hasPermission: false);
     }
   }
 
-  Future<bool> _ensureSubscribed() async {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) {
-      return false;
+  Future<List<_NearbyBooster>> _findNearbyBoosters() async {
+    if (_pickupLatLng == null) {
+      return const <_NearbyBooster>[];
     }
 
-    final userDoc = await FirebaseFirestore.instance
+    final currentUserId = FirebaseAuth.instance.currentUser?.uid;
+    final snapshot = await FirebaseFirestore.instance
         .collection('users')
-        .doc(user.uid)
+        .where('role', isEqualTo: 'driver')
+        .where('isAvailable', isEqualTo: true)
         .get();
 
-    if (!mounted) return false;
+    final boosters = <_NearbyBooster>[];
+    for (final doc in snapshot.docs) {
+      if (doc.id == currentUserId) continue;
 
-    if (!userDoc.exists) {
-      _showErrorSnackBar('User profile not found', Icons.person_off);
-      return false;
+      final data = doc.data();
+      final offeredServiceTypes = (data['offeredServiceTypes'] as List?)
+              ?.map((item) => item.toString())
+              .toSet() ??
+          <String>{serviceTypeBoost};
+      final offeredVehicleType = data['offeredVehicleType']?.toString();
+      final offeredPlugType = data['offeredPlugType']?.toString();
+      final offeredTowTypes = (data['offeredTowTypes'] as List?)
+              ?.map((item) => item.toString())
+              .toSet() ??
+          <String>{};
+      final latitude = (data['latitude'] as num?)?.toDouble() ?? 0.0;
+      final longitude = (data['longitude'] as num?)?.toDouble() ?? 0.0;
+      final email = (data['email'] ?? 'Booster') as String;
+
+      if (!offeredServiceTypes.contains(_serviceType)) {
+        continue;
+      }
+
+      if (_serviceType == serviceTypeBoost) {
+        if (offeredVehicleType != _vehicleType) {
+          continue;
+        }
+
+        if (_vehicleType == _electricVehicleType && offeredPlugType != _plugType) {
+          continue;
+        }
+      } else {
+        if (_towType == null || !offeredTowTypes.contains(_towType)) {
+          continue;
+        }
+      }
+
+      if (latitude == 0.0 && longitude == 0.0) {
+        continue;
+      }
+
+      final distanceMeters = Geolocator.distanceBetween(
+        _pickupLatLng!.latitude,
+        _pickupLatLng!.longitude,
+        latitude,
+        longitude,
+      );
+
+      final distanceKm = distanceMeters / 1000.0;
+      final etaMinutes = ((distanceKm / 40.0) * 60.0).ceil().clamp(1, 240);
+
+      boosters.add(
+        _NearbyBooster(
+          userId: doc.id,
+          displayName: email,
+          latitude: latitude,
+          longitude: longitude,
+          distanceKm: distanceKm,
+          etaMinutes: etaMinutes,
+        ),
+      );
     }
 
-    final bool isSubscribed = userDoc['isSubscribed'] ?? false;
-    if (isSubscribed) {
-      return true;
-    }
-
-    await Navigator.push(
-      context,
-      MaterialPageRoute(builder: (context) => const PaywallScreen()),
-    );
-
-    return false;
+    boosters.sort((a, b) => a.distanceKm.compareTo(b.distanceKm));
+    return boosters;
   }
 
-  Future<void> _openPickupSelector() async {
-    final selection = await showModalBottomSheet<_PickupSelection>(
-      context: context,
-      isScrollControlled: true,
-      builder: (context) => const _PickupSelectorSheet(),
+  Future<void> _requestBoosterAndPay() async {
+    final canProceed = await ensureSubscribedForAction(
+      context,
+      purpose: 'request_service',
     );
-
-    if (selection == null || !mounted) {
+    if (!canProceed) {
       return;
     }
 
-    setState(() {
-      _pickupAddress = selection.address;
-      _pickupLatLng = selection.latLng;
-      _vehicleType = selection.vehicleType;
-      _plugType = selection.plugType;
-      _nearbyBoosters.clear();
-    });
-
-    _showSuccessSnackBar('Pickup saved. Searching nearby boosters...');
-    await _searchNearbyBoosters();
-  }
-
-  Future<void> _requestBoost(String driverId) async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
 
@@ -201,116 +652,130 @@ class _CustomerScreenState extends State<CustomerScreen> {
       return;
     }
 
-    final subscribed = await _ensureSubscribed();
-    if (!subscribed || !mounted) {
+    if (!mounted) {
       return;
     }
 
     try {
-      final docRef = await FirebaseFirestore.instance.collection('requests').add({
-        'customerId': user.uid,
-        'driverId': driverId,
-        'status': 'pending',
-        'pickupAddress': _pickupAddress,
-        'pickupLatitude': _pickupLatLng!.latitude,
-        'pickupLongitude': _pickupLatLng!.longitude,
-        'vehicleType': _vehicleType,
-        'plugType': _plugType,
-        'timestamp': FieldValue.serverTimestamp(),
+      final docRef = FirebaseFirestore.instance.collection('requests').doc();
+
+      if (!mounted) return;
+
+      final paymentResult = await showModalBottomSheet<BoostPaymentResult>(
+        context: context,
+        isScrollControlled: true,
+        isDismissible: false,
+        enableDrag: false,
+        builder: (_) => _PaymentSheet(
+          requestId: docRef.id,
+          requestSeedData: <String, dynamic>{
+            'customerId': user.uid,
+            'driverId': null,
+            'status': 'awaiting_payment',
+            'statusUpdatedAt': FieldValue.serverTimestamp(),
+            'awaiting_paymentAt': FieldValue.serverTimestamp(),
+            'pickupAddress': _pickupAddress,
+            'pickupLatitude': _pickupLatLng!.latitude,
+            'pickupLongitude': _pickupLatLng!.longitude,
+            'serviceType': _serviceType,
+            'vehicleType': _serviceType == serviceTypeBoost ? _vehicleType : null,
+            'plugType': _serviceType == serviceTypeBoost ? _plugType : null,
+            'towType': _serviceType == serviceTypeTow ? _towType : null,
+            'notifiedDriverIds': const <String>[],
+            'notifiedBoostersPreview': const <Map<String, dynamic>>[],
+            'timestamp': FieldValue.serverTimestamp(),
+          },
+          serviceLabel: _serviceSummaryLabel,
+          totalAmountCents: _serviceTotalAmountCents,
+          baseAmountCents: _serviceBaseAmountCents,
+          taxAmountCents: _serviceTaxAmountCents,
+        ),
+      );
+
+      if (!mounted) return;
+
+      if (paymentResult == null) {
+        final requestSnap = await FirebaseFirestore.instance
+            .collection('requests')
+            .doc(docRef.id)
+            .get();
+        if (requestSnap.exists) {
+          await _transitionRequestStatus(
+            requestId: docRef.id,
+            to: RequestStatus.cancelled,
+          );
+        }
+        _showErrorSnackBar('Payment cancelled. Request was not dispatched.', Icons.info);
+        return;
+      }
+
+      if (mounted) {
+        setState(() => _isSearchingBoosters = true);
+      }
+
+      final boosters = await _findNearbyBoosters();
+      final topMatches = boosters.take(20).toList(growable: false);
+
+      await _transitionRequestStatus(
+        requestId: docRef.id,
+        to: RequestStatus.paid,
+        extra: {
+          'paymentAmount': paymentResult.amount,
+          'baseAmount': _serviceBaseAmountCents,
+          'taxAmount': _serviceTaxAmountCents,
+          'paymentCurrency': paymentResult.currency,
+          'paymentIntentId': paymentResult.paymentIntentId,
+          'paymentProvider': paymentResult.paymentProvider,
+          'notifiedDriverIds': topMatches.map((b) => b.userId).toList(growable: false),
+          'notifiedBoostersPreview': topMatches
+              .map(
+                (b) => {
+                  'driverId': b.userId,
+                  'distanceKm': b.distanceKm,
+                  'etaMinutes': b.etaMinutes,
+                },
+              )
+              .toList(growable: false),
+        },
+      );
+
+      final callable = FirebaseFunctions.instanceFor(region: 'northamerica-northeast1')
+          .httpsCallable('dispatchBoosterNotifications');
+      final dispatchResponse = await callable.call(<String, dynamic>{
+        'requestId': docRef.id,
       });
+      final responseData =
+          Map<String, dynamic>.from(dispatchResponse.data as Map<dynamic, dynamic>);
+      final notifiedCount = (responseData['notifiedCount'] as num?)?.toInt() ?? 0;
 
       if (mounted) {
         setState(() {
           _activeRequestId = docRef.id;
-          _activeRequestStatus = 'pending';
-          _activeDriverId = driverId;
+          _activeRequestStatus = notifiedCount > 0 ? 'searching' : 'no_boosters_available';
+          _activeDriverId = null;
+          _activeRequestCreatedAt = DateTime.now();
+          _activeRequestStatusUpdatedAt = DateTime.now();
+          _nearbyBoosters
+            ..clear()
+            ..addAll(boosters);
         });
         _showSuccessSnackBar(
-          'Invite sent. Waiting for booster confirmation.',
+          notifiedCount > 0
+              ? 'Payment confirmed. Notified $notifiedCount boosters nearest first.'
+              : 'Payment confirmed. No boosters were notified yet.',
         );
       }
     } catch (e) {
       if (mounted) {
-        _showErrorSnackBar(
-          'Failed to send request. Please try again',
-          Icons.cloud_off,
-        );
-      }
-    }
-  }
-
-  Future<void> _searchNearbyBoosters() async {
-    if (_pickupLatLng == null) {
-      _showErrorSnackBar('Set a pickup location first', Icons.place);
-      return;
-    }
-
-    setState(() => _isSearchingBoosters = true);
-
-    try {
-      final currentUserId = FirebaseAuth.instance.currentUser?.uid;
-      final snapshot = await FirebaseFirestore.instance
-          .collection('users')
-          .where('role', isEqualTo: 'driver')
-          .where('isAvailable', isEqualTo: true)
-          .get();
-
-      final boosters = <_NearbyBooster>[];
-      for (final doc in snapshot.docs) {
-        if (doc.id == currentUserId) continue;
-
-        final data = doc.data();
-        final latitude = (data['latitude'] as num?)?.toDouble() ?? 0.0;
-        final longitude = (data['longitude'] as num?)?.toDouble() ?? 0.0;
-        final email = (data['email'] ?? 'Booster') as String;
-
-        if (latitude == 0.0 && longitude == 0.0) {
-          continue;
+        if (e.toString().toLowerCase().contains('queued')) {
+          _showErrorSnackBar(
+            'No connection. Your request update is queued and will retry automatically.',
+            Icons.wifi_off,
+          );
+          return;
         }
-
-        final distanceMeters = Geolocator.distanceBetween(
-          _pickupLatLng!.latitude,
-          _pickupLatLng!.longitude,
-          latitude,
-          longitude,
-        );
-
-        final distanceKm = distanceMeters / 1000.0;
-        final etaMinutes = ((distanceKm / 40.0) * 60.0).ceil().clamp(1, 240);
-
-        boosters.add(
-          _NearbyBooster(
-            userId: doc.id,
-            displayName: email,
-            latitude: latitude,
-            longitude: longitude,
-            distanceKm: distanceKm,
-            etaMinutes: etaMinutes,
-          ),
-        );
-      }
-
-      boosters.sort((a, b) => a.distanceKm.compareTo(b.distanceKm));
-
-      if (!mounted) return;
-      setState(() {
-        _nearbyBoosters
-          ..clear()
-          ..addAll(boosters);
-      });
-
-      if (boosters.isEmpty) {
         _showErrorSnackBar(
-          'No available boosters found nearby right now',
-          Icons.search_off,
-        );
-      } else {
-        _showSuccessSnackBar('${boosters.length} boosters found nearby');
-      }
-    } catch (_) {
-      if (mounted) {
-        _showErrorSnackBar(
-          'Could not search boosters. Please try again',
+          'Failed to request booster. Please try again',
           Icons.cloud_off,
         );
       }
@@ -321,11 +786,6 @@ class _CustomerScreenState extends State<CustomerScreen> {
     }
   }
 
-  void _updateMarkers() {
-    if (!mounted) return;
-    setState(() {});
-  }
-
   void _watchLatestRequest() {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) {
@@ -333,6 +793,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
     }
 
     _requestWatchSub?.cancel();
+    _requestWatchRetryTimer?.cancel();
     _requestWatchSub = FirebaseFirestore.instance
         .collection('requests')
         .where('customerId', isEqualTo: user.uid)
@@ -349,6 +810,13 @@ class _CustomerScreenState extends State<CustomerScreen> {
           _activeRequestId = null;
           _activeRequestStatus = null;
           _activeDriverId = null;
+          _activeDriverDistanceKm = null;
+          _activeDriverEtaMinutes = null;
+          _activeDriverLatLng = null;
+          _activeDriverLastUpdatedAt = null;
+          _isDriverTrackingConnected = false;
+          _activeRequestCreatedAt = null;
+          _activeRequestStatusUpdatedAt = null;
         });
         return;
       }
@@ -357,19 +825,113 @@ class _CustomerScreenState extends State<CustomerScreen> {
       final data = doc.data();
       final newStatus = (data['status'] ?? 'pending').toString();
       final prevStatus = _activeRequestStatus;
+      final newDriverId = data['driverId']?.toString();
 
       setState(() {
         _activeRequestId = doc.id;
         _activeRequestStatus = newStatus;
-        _activeDriverId = data['driverId']?.toString();
+        _activeDriverId = newDriverId;
+        _activeRequestCreatedAt = _toDateTime(data['timestamp']);
+        _activeRequestStatusUpdatedAt =
+            _toDateTime(data['statusUpdatedAt']) ?? _toDateTime(data['timestamp']);
       });
 
-      // Auto-show payment sheet when booster accepts (fires once)
-      if (prevStatus != 'awaiting_payment' && newStatus == 'awaiting_payment') {
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) _showPaymentSheet(doc.id);
+      _watchActiveDriverLocation(newDriverId);
+
+      if ((prevStatus == 'pending' || prevStatus == 'paid' || prevStatus == 'searching') &&
+          (newStatus == 'accepted' || newStatus == 'en_route')) {
+        _showSuccessSnackBar('Provider accepted and is on the way.');
+      } else if (newStatus == 'arrived' && prevStatus != 'arrived') {
+        _showSuccessSnackBar('Booster has arrived at your location.');
+      } else if (newStatus == 'completed' && prevStatus != 'completed') {
+        _showSuccessSnackBar('Boost request completed.');
+      } else if (newStatus == 'cancelled' && prevStatus != 'cancelled') {
+        _showErrorSnackBar('This request was cancelled.', Icons.info);
+      } else if (newStatus == 'no_boosters_available' &&
+          prevStatus != 'no_boosters_available') {
+        _showErrorSnackBar('No boosters are available nearby right now.', Icons.search_off);
+      }
+    }, onError: (_) {
+      if (!mounted) return;
+      setState(() => _isDriverTrackingConnected = false);
+      _scheduleRequestWatchRetry();
+    }, onDone: _scheduleRequestWatchRetry);
+  }
+
+  void _watchActiveDriverLocation(String? driverId) {
+    _driverWatchSub?.cancel();
+    _driverWatchRetryTimer?.cancel();
+    if (driverId == null || _pickupLatLng == null) {
+      if (mounted) {
+        setState(() {
+          _activeDriverDistanceKm = null;
+          _activeDriverEtaMinutes = null;
+          _activeDriverLatLng = null;
+          _activeDriverLastUpdatedAt = null;
+          _isDriverTrackingConnected = false;
         });
       }
+      return;
+    }
+
+    if (mounted) {
+      setState(() => _isDriverTrackingConnected = true);
+    }
+
+    _driverWatchSub = FirebaseFirestore.instance
+        .collection('users')
+        .doc(driverId)
+        .snapshots()
+        .listen((doc) {
+      if (!mounted || !doc.exists || _pickupLatLng == null) return;
+      final data = doc.data() ?? <String, dynamic>{};
+      final lat = (data['latitude'] as num?)?.toDouble();
+      final lng = (data['longitude'] as num?)?.toDouble();
+      if (lat == null || lng == null) return;
+
+      final latestLatLng = LatLng(lat, lng);
+      final previousLatLng = _activeDriverLatLng;
+      final lastUpdatedAt =
+          _toDateTime(data['locationUpdatedAt']) ?? _toDateTime(data['updatedAt']);
+
+      final meters = Geolocator.distanceBetween(
+        lat,
+        lng,
+        _pickupLatLng!.latitude,
+        _pickupLatLng!.longitude,
+      );
+      final km = meters / 1000.0;
+      final etaMinutes = ((km / 40.0) * 60.0).ceil().clamp(1, 240);
+
+      setState(() {
+        _isDriverTrackingConnected = true;
+        _activeDriverDistanceKm = km;
+        _activeDriverEtaMinutes = etaMinutes;
+        _activeDriverLatLng = latestLatLng;
+        _activeDriverLastUpdatedAt = lastUpdatedAt;
+      });
+
+      if (_mapController != null) {
+        final movedMeters = previousLatLng == null
+            ? double.infinity
+            : Geolocator.distanceBetween(
+                previousLatLng.latitude,
+                previousLatLng.longitude,
+                latestLatLng.latitude,
+                latestLatLng.longitude,
+              );
+        if (movedMeters >= 80) {
+          _mapController!.animateCamera(CameraUpdate.newLatLng(latestLatLng));
+        }
+      }
+    }, onError: (_) {
+      if (!mounted) return;
+      setState(() => _isDriverTrackingConnected = false);
+      _scheduleDriverWatchRetry(driverId);
+    }, onDone: () {
+      if (!mounted) return;
+      setState(() => _isDriverTrackingConnected = false);
+      _scheduleDriverWatchRetry(driverId);
     });
   }
 
@@ -379,49 +941,50 @@ class _CustomerScreenState extends State<CustomerScreen> {
       isScrollControlled: true,
       isDismissible: false,
       enableDrag: false,
-      builder: (_) => _PaymentSheet(requestId: requestId),
+      builder: (_) => _PaymentSheet(
+        requestId: requestId,
+        serviceLabel: _serviceSummaryLabel,
+        totalAmountCents: _serviceTotalAmountCents,
+        baseAmountCents: _serviceBaseAmountCents,
+        taxAmountCents: _serviceTaxAmountCents,
+      ),
     );
 
     if (!mounted) return;
 
     if (result != null) {
       try {
-        await FirebaseFirestore.instance
-            .collection('requests')
-            .doc(requestId)
-            .update({
-          'status': 'paid',
-          'paidAt': FieldValue.serverTimestamp(),
-          'paymentAmount': result.amount,
-          'paymentCurrency': result.currency,
-          'paymentIntentId': result.paymentIntentId,
-          'paymentProvider': 'stripe',
-        });
+        await _transitionRequestStatus(
+          requestId: requestId,
+          to: RequestStatus.paid,
+          extra: {
+            'paymentAmount': result.amount,
+            'paymentCurrency': result.currency,
+            'paymentIntentId': result.paymentIntentId,
+            'paymentProvider': result.paymentProvider,
+          },
+        );
         if (mounted) {
-          _showSuccessSnackBar('Payment successful! Booster is heading your way.');
+          _showSuccessSnackBar(
+            result.paymentProvider == 'stripe'
+                ? 'Payment successful!'
+                : 'Payment confirmed in ${result.paymentProvider} mode.',
+          );
         }
       } catch (e) {
         if (mounted) {
+          if (e.toString().toLowerCase().contains('queued')) {
+            _showErrorSnackBar(
+              'No connection. Payment status update is queued and will retry automatically.',
+              Icons.wifi_off,
+            );
+            return;
+          }
           _showErrorSnackBar('Payment update failed. Please try again.', Icons.error);
         }
       }
     } else {
       _showErrorSnackBar('Payment cancelled. Booster is still waiting.', Icons.info);
-    }
-  }
-
-  void _recenterMap() {
-    final focus = _pickupLatLng ??
-        (_currentPosition == null
-            ? null
-            : LatLng(_currentPosition!.latitude, _currentPosition!.longitude));
-
-    if (_mapController != null && focus != null) {
-      _mapController!.animateCamera(
-        CameraUpdate.newLatLng(
-          focus,
-        ),
-      );
     }
   }
 
@@ -483,10 +1046,591 @@ class _CustomerScreenState extends State<CustomerScreen> {
     );
   }
 
+  int _currentStepNumber() {
+    switch (_currentStep) {
+      case _CustomerStep.vehicle:
+        return 1;
+      case _CustomerStep.location:
+        return 2;
+      case _CustomerStep.request:
+        return 3;
+      case _CustomerStep.boosters:
+        return 4;
+    }
+  }
+
+  String _currentStepTitle() {
+    switch (_currentStep) {
+      case _CustomerStep.vehicle:
+        return _serviceType == serviceTypeTow ? 'Choose Tow Type' : 'Choose Your Boost Type';
+      case _CustomerStep.location:
+        return 'Set Your Location';
+      case _CustomerStep.request:
+        return _serviceType == serviceTypeTow ? 'Request Tow' : 'Request Booster';
+      case _CustomerStep.boosters:
+        return _serviceType == serviceTypeTow ? 'Available Tow Providers' : 'Available Boosters';
+    }
+  }
+
+  String _currentStepSubtitle() {
+    switch (_currentStep) {
+      case _CustomerStep.vehicle:
+        return _serviceType == serviceTypeTow
+            ? 'Pick the tow service that matches your vehicle before we search.'
+            : 'Pick the exact kind of roadside help you need before we search.';
+      case _CustomerStep.location:
+        return 'Save your current location or enter a different address.';
+      case _CustomerStep.request:
+        return _serviceType == serviceTypeTow
+            ? 'Review your tow request and start finding nearby available providers.'
+            : 'Review your setup and start looking for nearby available boosters.';
+      case _CustomerStep.boosters:
+        return _serviceType == serviceTypeTow
+            ? 'Reach out to one of the available tow providers below.'
+            : 'Reach out to one of the available boosters below.';
+    }
+  }
+
+  Widget _buildStepIntro() {
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: Color(0xFFE0E0E8)),
+        boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 6, offset: Offset(0, 2))],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 42,
+                height: 42,
+                decoration: BoxDecoration(
+                  color: const Color(0xFF22D3EE).withValues(alpha: 0.16),
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Center(
+                  child: Text(
+                    '${_currentStepNumber()}',
+                    style: const TextStyle(
+                      color: Color(0xFF0891B2),
+                      fontSize: 18,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      _currentStepTitle(),
+                      style: Theme.of(context).textTheme.headlineSmall,
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      _currentStepSubtitle(),
+                      style: Theme.of(context)
+                          .textTheme
+                          .bodyMedium
+                          ?.copyWith(color: Colors.grey[700]),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Row(
+            children: List.generate(4, (index) {
+              final stepIndex = index + 1;
+              final isComplete = stepIndex < _currentStepNumber();
+              final isActive = stepIndex == _currentStepNumber();
+              return Expanded(
+                child: Container(
+                  height: 6,
+                  margin: EdgeInsets.only(right: index == 3 ? 0 : 8),
+                  decoration: BoxDecoration(
+                    color: isComplete || isActive
+                        ? (isActive
+                            ? const Color(0xFF22D3EE)
+                            : const Color(0xFF6366F1))
+                        : const Color(0xFFE8E8EE),
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                ),
+              );
+            }),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSelectionSummary() {
+    if (_vehicleType == null && _pickupAddress == null) {
+      return const SizedBox.shrink();
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: const Color(0xFFE0E0E8)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Current Selection', style: Theme.of(context).textTheme.titleSmall),
+          if (_vehicleType != null) ...[
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Icon(
+                  _serviceType == serviceTypeTow
+                      ? Icons.local_shipping
+                      : (_vehicleType == _electricVehicleType
+                          ? Icons.ev_station
+                          : Icons.directions_car),
+                  color: const Color(0xFF22D3EE),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    _serviceSummaryLabel,
+                    style: Theme.of(context).textTheme.bodyMedium,
+                  ),
+                ),
+              ],
+            ),
+          ],
+          if (_pickupAddress != null) ...[
+            const SizedBox(height: 10),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Icon(Icons.place, color: Color(0xFF6366F1)),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    _pickupAddress!,
+                    style: Theme.of(context).textTheme.bodyMedium,
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildVehicleStep() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (_serviceType == serviceTypeTow)
+          _TowTypeSelector(
+            selectedTowType: _towType,
+            onTowTypeChanged: _selectTowType,
+          )
+        else
+          _VehicleTypeSelector(
+            selectedVehicleType: _vehicleType,
+            selectedPlugType: _plugType,
+            onVehicleTypeChanged: _selectVehicleType,
+            onPlugTypeChanged: (plugType) => setState(() => _plugType = plugType),
+          ),
+        const SizedBox(height: 18),
+        ElevatedButton(
+          onPressed: _continueToLocationStep,
+          style: ElevatedButton.styleFrom(
+            padding: const EdgeInsets.symmetric(vertical: 16),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          ),
+          child: const Text('Continue to Location'),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildCurrentLocationTab() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: const Color(0xFFE0E0E8)),
+          ),
+          child: _isResolvingLocation && _detectedCurrentAddress == null
+              ? const Row(
+                  children: [
+                    SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                    SizedBox(width: 12),
+                    Expanded(child: Text('Detecting your current location...')),
+                  ],
+                )
+              : Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Row(
+                      children: [
+                        Icon(Icons.my_location, color: Color(0xFF22D3EE)),
+                        SizedBox(width: 10),
+                        Text('Detected Location'),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      _detectedCurrentAddress ?? 'Tap this tab to detect your current location.',
+                      style: Theme.of(context)
+                          .textTheme
+                          .bodyMedium
+                          ?.copyWith(color: Colors.grey[700]),
+                    ),
+                  ],
+                ),
+        ),
+        const SizedBox(height: 14),
+        ElevatedButton.icon(
+          onPressed: _isResolvingLocation ? null : _saveDetectedCurrentLocation,
+          icon: const Icon(Icons.check_circle_outline),
+          label: const Text('Save Current Location'),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildMapLocationTab() {
+    final initialTarget = _locationPickerLatLng ??
+        _pickupLatLng ??
+        (_currentPosition == null
+            ? _defaultMapCenter
+            : LatLng(_currentPosition!.latitude, _currentPosition!.longitude));
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        TextField(
+          controller: _mapAddressController,
+          decoration: const InputDecoration(
+            labelText: 'Enter address',
+            prefixIcon: Icon(Icons.search),
+          ),
+          textInputAction: TextInputAction.search,
+          onSubmitted: (_) => _searchAddressOnMap(),
+        ),
+        const SizedBox(height: 12),
+        SizedBox(
+          height: 260,
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(18),
+            child: GoogleMap(
+              initialCameraPosition: CameraPosition(target: initialTarget, zoom: 14),
+              onMapCreated: (controller) {
+                _locationPickerMapController = controller;
+              },
+              onTap: _selectLocationFromMap,
+              markers: _locationPickerLatLng == null
+                  ? const <Marker>{}
+                  : <Marker>{
+                      Marker(
+                        markerId: const MarkerId('location_picker'),
+                        position: _locationPickerLatLng!,
+                        infoWindow: InfoWindow(
+                          title: _locationPickerAddress ?? 'Selected location',
+                        ),
+                      ),
+                    },
+              myLocationEnabled: _hasLocationPermission,
+              myLocationButtonEnabled: _hasLocationPermission,
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+        if (_locationPickerAddress != null)
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF2F2F7),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: const Color(0xFFE0E0E8)),
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Icon(Icons.pin_drop, color: Color(0xFF6366F1)),
+                const SizedBox(width: 10),
+                Expanded(child: Text(_locationPickerAddress!)),
+              ],
+            ),
+          ),
+        if (_locationPickerAddress != null) const SizedBox(height: 12),
+        Row(
+          children: [
+            Expanded(
+              child: OutlinedButton(
+                onPressed: _isResolvingLocation ? null : _searchAddressOnMap,
+                child: _isResolvingLocation
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Text('Find on Map'),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: ElevatedButton(
+                onPressed: _isResolvingLocation ? null : _saveMapLocation,
+                child: const Text('Save Location'),
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _buildLocationStep() {
+    return DefaultTabController(
+      length: 2,
+      child: Builder(
+        builder: (context) {
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Container(
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF2F2F7),
+                  borderRadius: BorderRadius.circular(18),
+                  border: Border.all(color: const Color(0xFFE0E0E8)),
+                ),
+                child: TabBar(
+                  labelPadding: const EdgeInsets.symmetric(horizontal: 8),
+                  onTap: (index) {
+                    final tab = index == 0
+                        ? _LocationSelectionTab.current
+                        : _LocationSelectionTab.map;
+                    setState(() => _locationSelectionTab = tab);
+                    if (tab == _LocationSelectionTab.current) {
+                      _prepareCurrentLocationPreview();
+                    }
+                  },
+                  tabs: const [
+                    Tab(text: 'Current Location'),
+                    Tab(text: 'Different Address'),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+              SizedBox(
+                height: 420,
+                child: TabBarView(
+                  physics: const NeverScrollableScrollPhysics(),
+                  children: [
+                    SingleChildScrollView(
+                      child: _buildCurrentLocationTab(),
+                    ),
+                    SingleChildScrollView(
+                      child: _buildMapLocationTab(),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildRequestStep() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _buildSelectionSummary(),
+        const SizedBox(height: 18),
+        Container(
+          padding: const EdgeInsets.all(18),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(color: const Color(0xFFE0E0E8)),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Ready to Request?', style: Theme.of(context).textTheme.titleLarge),
+              const SizedBox(height: 10),
+              Text(
+                _serviceType == serviceTypeTow
+                    ? 'We will search for tow providers currently available near your saved location.'
+                    : 'We will search for all boosters that are currently available near your saved location.',
+                style: Theme.of(context)
+                    .textTheme
+                    .bodyMedium
+                    ?.copyWith(color: Colors.grey[300]),
+              ),
+              const SizedBox(height: 18),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton.icon(
+                    onPressed: _isSearchingBoosters ? null : _requestBoosterAndPay,
+                  icon: _isSearchingBoosters
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.payment),
+                  label: Text(
+                    'Request ${_serviceType == serviceTypeTow ? 'Tow' : 'Booster'} • Pay \$${(_serviceTotalAmountCents / 100).toStringAsFixed(2)}',
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildBoostersStep() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        SizedBox(
+          height: 220,
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(18),
+            child: GoogleMap(
+              initialCameraPosition: CameraPosition(
+                target: _pickupLatLng ??
+                    (_currentPosition == null
+                        ? _defaultMapCenter
+                        : LatLng(_currentPosition!.latitude, _currentPosition!.longitude)),
+                zoom: 12,
+              ),
+              markers: _buildMarkers(),
+              onMapCreated: (controller) {
+                _mapController = controller;
+              },
+              myLocationEnabled: _hasLocationPermission,
+              myLocationButtonEnabled: _hasLocationPermission,
+            ),
+          ),
+        ),
+        const SizedBox(height: 16),
+        _buildSelectionSummary(),
+        const SizedBox(height: 16),
+        if (_nearbyBoosters.isEmpty)
+          BoosterSurfaceCard(
+            padding: const EdgeInsets.all(18),
+            child: Column(
+              children: [
+                const Icon(Icons.search_off, size: 36, color: Color(0xFF22D3EE)),
+                const SizedBox(height: 12),
+                Text('No boosters available right now', style: Theme.of(context).textTheme.titleMedium),
+                const SizedBox(height: 8),
+                Text(
+                  'Try again in a moment or adjust the location and search again.',
+                  textAlign: TextAlign.center,
+                  style: Theme.of(context)
+                      .textTheme
+                      .bodyMedium
+                      ?.copyWith(color: Colors.grey[400]),
+                ),
+              ],
+            ),
+          )
+        else
+          ListView.builder(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            itemCount: _nearbyBoosters.length,
+            itemBuilder: (context, index) {
+              final booster = _nearbyBoosters[index];
+              return BoosterSurfaceCard(
+                margin: const EdgeInsets.only(bottom: 12),
+                padding: const EdgeInsets.all(16),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 52,
+                      height: 52,
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF6366F1).withValues(alpha: 0.16),
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                      child: const Icon(Icons.directions_car, color: Color(0xFF818CF8)),
+                    ),
+                    const SizedBox(width: 14),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(booster.displayName, style: Theme.of(context).textTheme.titleMedium),
+                          const SizedBox(height: 4),
+                          Text(
+                            '${booster.distanceKm.toStringAsFixed(2)} km away • ETA ${booster.etaMinutes} min',
+                            style: Theme.of(context)
+                                .textTheme
+                                .bodySmall
+                                ?.copyWith(color: Colors.grey[400]),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    ElevatedButton(
+                      onPressed: _isWaitingForBooster ? null : _requestBoosterAndPay,
+                      child: const Text('Request'),
+                    ),
+                  ],
+                ),
+              );
+            },
+          ),
+      ],
+    );
+  }
+
+  Widget _buildCurrentStepContent() {
+    switch (_currentStep) {
+      case _CustomerStep.vehicle:
+        return _buildVehicleStep();
+      case _CustomerStep.location:
+        return _buildLocationStep();
+      case _CustomerStep.request:
+        return _buildRequestStep();
+      case _CustomerStep.boosters:
+        return _buildBoostersStep();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back_ios_new),
+          onPressed: _goBackOneStep,
+        ),
         title: const Text('Booster'),
         actions: [
           IconButton(
@@ -504,202 +1648,57 @@ class _CustomerScreenState extends State<CustomerScreen> {
         ],
       ),
       body: _isLoading
-          ? const Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  CircularProgressIndicator(),
-                  SizedBox(height: 16),
-                  Text('Getting your location...'),
-                ],
+          ? const BoosterPageBackground(
+              child: Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    CircularProgressIndicator(),
+                    SizedBox(height: 16),
+                    Text('Getting your location...'),
+                  ],
+                ),
               ),
             )
-          : Column(
-              children: [
-                Expanded(
-                  flex: 5,
-                  child: GoogleMap(
-                    initialCameraPosition: CameraPosition(
-                      target: LatLng(
-                        _currentPosition!.latitude,
-                        _currentPosition!.longitude,
-                      ),
-                      zoom: 14,
-                    ),
-                    markers: _buildMarkers(),
-                    onMapCreated: (controller) {
-                      _mapController = controller;
-                    },
-                    myLocationEnabled: _hasLocationPermission,
-                    myLocationButtonEnabled: _hasLocationPermission,
-                  ),
-                ),
-                Expanded(
-                  flex: 4,
-                  child: Container(
-                    padding: const EdgeInsets.fromLTRB(16, 14, 16, 6),
-                    decoration: BoxDecoration(
-                      color: Theme.of(context).scaffoldBackgroundColor,
-                      border: const Border(
-                        top: BorderSide(color: Colors.white10),
-                      ),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        Row(
-                          children: [
-                            Expanded(
-                              child: OutlinedButton.icon(
-                                onPressed: _openPickupSelector,
-                                icon: const Icon(Icons.place),
-                                label: const Text('Set Pickup'),
-                              ),
-                            ),
-                            const SizedBox(width: 10),
-                            Expanded(
-                              child: ElevatedButton.icon(
-                                onPressed: _isSearchingBoosters
-                                    ? null
-                                    : _searchNearbyBoosters,
-                                icon: _isSearchingBoosters
-                                    ? const SizedBox(
-                                        width: 16,
-                                        height: 16,
-                                        child: CircularProgressIndicator(
-                                          strokeWidth: 2,
-                                        ),
-                                      )
-                                    : const Icon(Icons.search),
-                                label: const Text('Search'),
-                              ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 10),
-                        if (_pickupAddress != null)
-                          Container(
-                            padding: const EdgeInsets.all(10),
-                            decoration: BoxDecoration(
-                              color: const Color(0xFF1E1E1E),
-                              borderRadius: BorderRadius.circular(12),
-                              border: Border.all(color: Colors.white10),
-                            ),
-                            child: Row(
-                              children: [
-                                const Icon(
-                                  Icons.pin_drop,
-                                  color: Color(0xFF6366F1),
-                                ),
-                                const SizedBox(width: 8),
-                                Expanded(
-                                  child: Text(
-                                    _pickupAddress!,
-                                    style:
-                                        Theme.of(context).textTheme.bodyMedium,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        if (_vehicleType != null) ...[
-                          const SizedBox(height: 8),
-                          Container(
-                            padding: const EdgeInsets.all(10),
-                            decoration: BoxDecoration(
-                              color: const Color(0xFF1E1E1E),
-                              borderRadius: BorderRadius.circular(12),
-                              border: Border.all(color: Colors.white10),
-                            ),
-                            child: Row(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Icon(
-                                  _vehicleType == _electricVehicleType
-                                      ? Icons.ev_station
-                                      : Icons.directions_car,
-                                  color: const Color(0xFF22D3EE),
-                                ),
-                                const SizedBox(width: 8),
-                                Expanded(
-                                  child: Text(
-                                    _vehicleType == _electricVehicleType
-                                        ? 'Electric vehicle${_plugType == null ? '' : ' • $_plugType'}'
-                                        : 'Regular vehicle',
-                                    style: Theme.of(context).textTheme.bodyMedium,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ],
-                        const SizedBox(height: 10),
-                        if (_activeRequestId != null)
-                          _RequestStatusCard(
-                            status: _activeRequestStatus ?? 'pending',
-                            driverId: _activeDriverId,
-                            onPayNow: _activeRequestStatus == 'awaiting_payment'
-                                ? () => _showPaymentSheet(_activeRequestId!)
-                                : null,
-                          ),
-                        if (_activeRequestId != null) const SizedBox(height: 10),
-                        Text(
-                          'Nearby Boosters',
-                          style: Theme.of(context).textTheme.titleMedium,
-                        ),
-                        const SizedBox(height: 8),
-                        Expanded(
-                          child: _nearbyBoosters.isEmpty
-                              ? Center(
-                                  child: Text(
-                                    _pickupAddress == null
-                                        ? 'Set pickup and search to find boosters'
-                                        : 'No boosters found yet',
-                                    style: Theme.of(context)
-                                        .textTheme
-                                        .bodyMedium
-                                        ?.copyWith(color: Colors.grey[400]),
-                                  ),
-                                )
-                              : ListView.builder(
-                                  itemCount: _nearbyBoosters.length,
-                                  itemBuilder: (context, index) {
-                                    final booster = _nearbyBoosters[index];
-                                    return Card(
-                                      margin: const EdgeInsets.only(bottom: 8),
-                                      child: ListTile(
-                                        leading: const Icon(
-                                          Icons.directions_car,
-                                          color: Color(0xFF6366F1),
-                                        ),
-                                        title: Text(booster.displayName),
-                                        subtitle: Text(
-                                          '${booster.distanceKm.toStringAsFixed(2)} km • ETA ${booster.etaMinutes} min',
-                                        ),
-                                        trailing: ElevatedButton(
-                                          onPressed: _isWaitingForBooster
-                                              ? null
-                                              : () => _requestBoost(booster.userId),
-                                          child: const Text('Send Invite'),
-                                        ),
-                                      ),
-                                    );
-                                  },
-                                ),
+          : BoosterPageBackground(
+              child: SafeArea(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      _buildStepIntro(),
+                      if (_activeRequestId != null) ...[
+                        const SizedBox(height: 16),
+                        _RequestStatusCard(
+                          status: _activeRequestStatus ?? 'pending',
+                          driverId: _activeDriverId,
+                          driverDistanceKm: _activeDriverDistanceKm,
+                          driverEtaMinutes: _activeDriverEtaMinutes,
+                          driverLastUpdatedAt: _activeDriverLastUpdatedAt,
+                          isTrackingConnected: _isDriverTrackingConnected,
+                          requestCreatedAt: _activeRequestCreatedAt,
+                          statusUpdatedAt: _activeRequestStatusUpdatedAt,
+                          now: DateTime.now(),
+                          onOpenTracker: _openActiveRequestTracker,
+                          onPayNow: _activeRequestStatus == 'awaiting_payment'
+                              ? () => _showPaymentSheet(_activeRequestId!)
+                              : null,
                         ),
                       ],
-                    ),
+                      const SizedBox(height: 16),
+                      _buildCurrentStepContent(),
+                    ],
                   ),
                 ),
-              ],
+              ),
             ),
-      floatingActionButton: _isLoading
-          ? null
-          : FloatingActionButton(
-              onPressed: _recenterMap,
-              tooltip: 'Recenter Map',
-              child: const Icon(Icons.my_location),
-            ),
+      bottomNavigationBar: widget.showBottomNav
+          ? MainBottomNavBar(
+              currentTab: MainTab.request,
+              onTabSelected: _onTabSelected,
+            )
+          : null,
     );
   }
 
@@ -728,6 +1727,22 @@ class _CustomerScreenState extends State<CustomerScreen> {
       );
     }
 
+    if (_activeDriverLatLng != null) {
+      markers.add(
+        Marker(
+          markerId: const MarkerId('active_driver'),
+          position: _activeDriverLatLng!,
+          infoWindow: InfoWindow(
+            title: 'Booster location',
+            snippet: _activeDriverDistanceKm != null && _activeDriverEtaMinutes != null
+                ? '${_activeDriverDistanceKm!.toStringAsFixed(1)} km • ETA ${_activeDriverEtaMinutes!} min'
+                : 'Live location update',
+          ),
+          icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueCyan),
+        ),
+      );
+    }
+
     for (final booster in _nearbyBoosters) {
       markers.add(
         Marker(
@@ -748,11 +1763,43 @@ class _CustomerScreenState extends State<CustomerScreen> {
 }
 
 class _RequestStatusCard extends StatelessWidget {
-  const _RequestStatusCard({required this.status, required this.driverId, this.onPayNow});
+  const _RequestStatusCard({
+    required this.status,
+    required this.driverId,
+    required this.driverDistanceKm,
+    required this.driverEtaMinutes,
+    required this.driverLastUpdatedAt,
+    required this.isTrackingConnected,
+    required this.requestCreatedAt,
+    required this.statusUpdatedAt,
+    required this.now,
+    this.onOpenTracker,
+    this.onPayNow,
+  });
 
   final String status;
   final String? driverId;
+  final double? driverDistanceKm;
+  final int? driverEtaMinutes;
+  final DateTime? driverLastUpdatedAt;
+  final bool isTrackingConnected;
+  final DateTime? requestCreatedAt;
+  final DateTime? statusUpdatedAt;
+  final DateTime now;
+  final VoidCallback? onOpenTracker;
   final VoidCallback? onPayNow;
+
+  String _formatElapsed(DateTime? from, DateTime now) {
+    if (from == null) return 'just now';
+    final diff = now.difference(from);
+    if (diff.inMinutes < 1) {
+      return '${diff.inSeconds.clamp(0, 59)}s ago';
+    }
+    if (diff.inHours < 1) {
+      return '${diff.inMinutes}m ago';
+    }
+    return '${diff.inHours}h ago';
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -760,13 +1807,25 @@ class _RequestStatusCard extends StatelessWidget {
     final isPending = n == 'pending';
     final needsPayment = n == 'awaiting_payment';
     final isPaid = n == 'paid';
+    final isSearching = n == 'searching';
     final isEnRoute = n == 'accepted' || n == 'en_route';
+    final isArrived = n == 'arrived';
     final isDone = n == 'completed';
+    final isCancelled = n == 'cancelled';
+    final noBoosters = n == 'no_boosters_available';
 
     final Color tone = isDone
         ? Colors.green
+        : isArrived
+            ? const Color(0xFF14B8A6)
         : isEnRoute || isPaid
             ? const Color(0xFF06B6D4)
+          : isCancelled
+            ? const Color(0xFFEF4444)
+          : noBoosters
+            ? const Color(0xFFFB7185)
+          : isSearching
+            ? const Color(0xFF6366F1)
             : needsPayment
                 ? const Color(0xFFF59E0B)
                 : isPending
@@ -775,40 +1834,73 @@ class _RequestStatusCard extends StatelessWidget {
 
     final IconData icon = isDone
         ? Icons.check_circle
+        : isArrived
+            ? Icons.place
         : isEnRoute || isPaid
             ? Icons.directions_car
+          : isCancelled
+            ? Icons.cancel
+          : noBoosters
+            ? Icons.search_off
+          : isSearching
+            ? Icons.notifications_active
             : needsPayment
                 ? Icons.payment
                 : Icons.hourglass_bottom;
 
     final String title = isDone
         ? 'Boost Completed'
+        : isArrived
+            ? 'Booster has arrived'
         : isEnRoute
             ? 'Booster is on the way'
             : isPaid
-                ? 'Payment confirmed — booster heading over'
+            ? 'Payment confirmed — notifying nearby boosters'
+            : isCancelled
+              ? 'Request cancelled'
+            : noBoosters
+              ? 'No boosters available'
+            : isSearching
+              ? 'Searching nearby boosters'
                 : needsPayment
-                    ? 'Booster accepted — payment required'
+                    ? 'Provider accepted — payment required'
                     : 'Waiting for booster to accept';
 
     final String subtitle = isDone
         ? 'Your request is complete. Thank you!'
+        : isArrived
+            ? 'Booster reached your pickup point.'
         : isEnRoute
-            ? 'Booster is en route to your location'
+          ? (driverDistanceKm != null && driverEtaMinutes != null
+            ? 'Booster is ${driverDistanceKm!.toStringAsFixed(1)} km away • ETA ${driverEtaMinutes!} min'
+            : 'Booster is en route to your location')
             : isPaid
-                ? 'Sit tight, help is on the way!'
+            ? 'Hold tight while we notify available boosters nearest first.'
+            : isCancelled
+              ? 'The request is no longer active.'
+            : noBoosters
+              ? 'Try again shortly or update your pickup location.'
+            : isSearching
+              ? 'Pinging available boosters in your area...'
                 : needsPayment
-                    ? 'Tap "Pay Now" to confirm and dispatch the booster'
+                    ? 'Tap "Pay Now" to confirm and dispatch the provider'
                     : 'Invite sent. Please wait for confirmation.';
 
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: tone.withValues(alpha: 0.15),
+    final canOpenTracker = !isCancelled && !isDone && !noBoosters;
+
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: tone.withValues(alpha: 0.5)),
-      ),
-      child: Column(
+        onTap: canOpenTracker ? onOpenTracker : null,
+        child: Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: tone.withValues(alpha: 0.15),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: tone.withValues(alpha: 0.5)),
+          ),
+          child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
@@ -828,6 +1920,37 @@ class _RequestStatusCard extends StatelessWidget {
                           .bodySmall
                           ?.copyWith(color: Colors.grey[300]),
                     ),
+                    const SizedBox(height: 2),
+                    Text(
+                      'Status updated ${_formatElapsed(statusUpdatedAt, now)} • Requested ${_formatElapsed(requestCreatedAt, now)}',
+                      style: Theme.of(context)
+                          .textTheme
+                          .labelSmall
+                          ?.copyWith(color: Colors.grey[400]),
+                    ),
+                    if (isEnRoute || isArrived) ...[
+                      const SizedBox(height: 2),
+                      Text(
+                        !isTrackingConnected
+                            ? 'Live tracking reconnecting...'
+                            : driverLastUpdatedAt == null
+                                ? 'Waiting for live GPS update...'
+                                : now.difference(driverLastUpdatedAt!).inSeconds > 45
+                                    ? 'Latest driver GPS is stale (${_formatElapsed(driverLastUpdatedAt, now)}).'
+                                    : 'Driver GPS updated ${_formatElapsed(driverLastUpdatedAt, now)}',
+                        style: Theme.of(context)
+                            .textTheme
+                            .labelSmall
+                            ?.copyWith(
+                              color: !isTrackingConnected
+                                  ? const Color(0xFFF59E0B)
+                                  : (driverLastUpdatedAt != null &&
+                                          now.difference(driverLastUpdatedAt!).inSeconds > 45)
+                                      ? const Color(0xFFF59E0B)
+                                      : Colors.grey[400],
+                            ),
+                      ),
+                    ],
                   ],
                 ),
               ),
@@ -837,11 +1960,8 @@ class _RequestStatusCard extends StatelessWidget {
             const SizedBox(height: 10),
             SizedBox(
               width: double.infinity,
-              child: ElevatedButton.icon(
+              child: ElevatedButton(
                 onPressed: onPayNow,
-                icon: const Icon(Icons.payment, size: 18),
-                label: const Text('Pay Now — \$25.00',
-                    style: TextStyle(fontWeight: FontWeight.bold)),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: const Color(0xFFF59E0B),
                   foregroundColor: Colors.black,
@@ -849,19 +1969,60 @@ class _RequestStatusCard extends StatelessWidget {
                       borderRadius: BorderRadius.circular(10)),
                   padding: const EdgeInsets.symmetric(vertical: 12),
                 ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: const [
+                    Icon(Icons.payment, size: 18),
+                    SizedBox(width: 8),
+                    Flexible(
+                      child: FittedBox(
+                        fit: BoxFit.scaleDown,
+                        child: Text(
+                          'Pay Now',
+                          style: TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+          if (canOpenTracker && onOpenTracker != null) ...[
+            const SizedBox(height: 10),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: onOpenTracker,
+                icon: const Icon(Icons.map_outlined),
+                label: const Text('Open Live Tracker'),
               ),
             ),
           ],
         ],
+      ),
+        ),
       ),
     );
   }
 }
 
 class _PaymentSheet extends StatefulWidget {
-  const _PaymentSheet({required this.requestId});
+  const _PaymentSheet({
+    required this.requestId,
+    required this.serviceLabel,
+    required this.totalAmountCents,
+    required this.baseAmountCents,
+    required this.taxAmountCents,
+    this.requestSeedData,
+  });
 
   final String requestId;
+  final String serviceLabel;
+  final int totalAmountCents;
+  final int baseAmountCents;
+  final int taxAmountCents;
+  final Map<String, dynamic>? requestSeedData;
 
   @override
   State<_PaymentSheet> createState() => _PaymentSheetState();
@@ -871,13 +2032,22 @@ class _PaymentSheetState extends State<_PaymentSheet> {
   bool _isProcessing = false;
   String? _error;
 
+  StripePaymentService get _paymentService => StripePaymentService.instance;
+
   Future<void> _processPayment() async {
     setState(() => _isProcessing = true);
 
     try {
+      if (widget.requestSeedData != null) {
+        await FirebaseFirestore.instance
+            .collection('requests')
+            .doc(widget.requestId)
+            .set(widget.requestSeedData!);
+      }
+
       final result = await StripePaymentService.instance.payForBoostRequest(
         requestId: widget.requestId,
-        amountInCents: boostPaymentTotalCadCents,
+        amountInCents: widget.totalAmountCents,
       );
 
       if (!mounted) return;
@@ -903,7 +2073,7 @@ class _PaymentSheetState extends State<_PaymentSheet> {
       top: false,
       child: Container(
         decoration: const BoxDecoration(
-          color: Color(0xFF1E293B),
+          color: Colors.white,
           borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
         ),
         child: ConstrainedBox(
@@ -945,17 +2115,28 @@ class _PaymentSheetState extends State<_PaymentSheet> {
                 child: const Icon(Icons.payment, color: Color(0xFFF59E0B)),
               ),
               const SizedBox(width: 14),
-              const Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text('Complete Payment',
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: const [
+                    Text(
+                      'Complete Payment',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                       style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold)),
-                  Text('Booster is waiting for your confirmation',
-                      style: TextStyle(color: Colors.grey, fontSize: 12)),
-                ],
+                        color: Colors.white,
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    Text(
+                      'Provider is waiting for your confirmation',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(color: Colors.grey, fontSize: 12),
+                    ),
+                  ],
+                ),
               ),
             ],
           ),
@@ -964,23 +2145,27 @@ class _PaymentSheetState extends State<_PaymentSheet> {
           Container(
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
-              color: const Color(0xFF0F172A),
+              color: const Color(0xFFF2F2F7),
               borderRadius: BorderRadius.circular(12),
             ),
             child: Column(
               children: [
-                _SummaryRow(label: 'Boost Service', value: '\$20.00'),
+                _SummaryRow(
+                  label: widget.serviceLabel,
+                  value: '\$${(widget.baseAmountCents / 100).toStringAsFixed(2)}',
+                ),
                 const SizedBox(height: 8),
-                _SummaryRow(label: 'Service Fee', value: '\$3.50'),
-                const SizedBox(height: 8),
-                _SummaryRow(label: 'Tax', value: '\$1.50'),
+                _SummaryRow(
+                  label: 'Tax',
+                  value: '\$${(widget.taxAmountCents / 100).toStringAsFixed(2)}',
+                ),
                 const Padding(
                   padding: EdgeInsets.symmetric(vertical: 8),
-                  child: Divider(color: Colors.white12),
+                  child: Divider(color: Color(0xFFE0E0E8)),
                 ),
                 _SummaryRow(
                     label: 'Total',
-                    value: '\$25.00',
+                    value: '\$${(widget.totalAmountCents / 100).toStringAsFixed(2)}',
                     bold: true,
                     valueColor: const Color(0xFFF59E0B)),
               ],
@@ -990,18 +2175,24 @@ class _PaymentSheetState extends State<_PaymentSheet> {
           Container(
             padding: const EdgeInsets.all(14),
             decoration: BoxDecoration(
-              color: const Color(0xFF0F172A),
+              color: const Color(0xFFF2F2F7),
               borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: Colors.white10),
+              border: Border.all(color: const Color(0xFFE0E0E8)),
             ),
-            child: const Row(
+            child: Row(
               children: [
-                Icon(Icons.lock, color: Color(0xFF22D3EE), size: 18),
-                SizedBox(width: 10),
+                Icon(
+                  _paymentService.paymentMode == BoostPaymentMode.stripe
+                      ? Icons.lock
+                      : Icons.science,
+                  color: const Color(0xFF22D3EE),
+                  size: 18,
+                ),
+                const SizedBox(width: 10),
                 Expanded(
                   child: Text(
-                    'Secure Stripe checkout. Card entry happens in Stripe PaymentSheet.',
-                    style: TextStyle(color: Colors.white70, fontSize: 13),
+                    _paymentService.paymentInfoText,
+                    style: const TextStyle(color: Color(0xFF8A8A9A), fontSize: 13),
                   ),
                 ),
               ],
@@ -1026,9 +2217,13 @@ class _PaymentSheetState extends State<_PaymentSheet> {
                       child: CircularProgressIndicator(
                           strokeWidth: 2, color: Colors.black),
                     )
-                  : const Text('Continue to Stripe \$25.00',
-                      style: TextStyle(
-                          fontSize: 16, fontWeight: FontWeight.bold)),
+                    : Text(
+                        '${_paymentService.checkoutButtonLabel} \$${(widget.totalAmountCents / 100).toStringAsFixed(2)}',
+                        style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
             ),
           ),
           if (_error != null) ...[
@@ -1043,7 +2238,7 @@ class _PaymentSheetState extends State<_PaymentSheet> {
             child: TextButton(
               onPressed: _isProcessing
                   ? null
-                  : () => Navigator.of(context).pop(false),
+                  : () => Navigator.of(context).pop(),
               child: const Text('Cancel',
                   style: TextStyle(color: Colors.grey)),
             ),
@@ -1075,12 +2270,12 @@ class _SummaryRow extends StatelessWidget {
       children: [
         Text(label,
             style: TextStyle(
-                color: bold ? Colors.white : Colors.grey[400],
+                color: bold ? const Color(0xFF1A1A2E) : Colors.grey[600],
                 fontWeight: bold ? FontWeight.bold : FontWeight.normal,
                 fontSize: bold ? 15 : 13)),
         Text(value,
             style: TextStyle(
-                color: valueColor ?? (bold ? Colors.white : Colors.white70),
+                color: valueColor ?? (bold ? const Color(0xFF1A1A2E) : const Color(0xFF8A8A9A)),
                 fontWeight: bold ? FontWeight.bold : FontWeight.normal,
                 fontSize: bold ? 16 : 13)),
       ],
@@ -1106,300 +2301,52 @@ class _NearbyBooster {
   final int etaMinutes;
 }
 
-class _PickupSelection {
-  const _PickupSelection({
-    required this.address,
-    required this.latLng,
-    required this.vehicleType,
-    this.plugType,
+const String _regularVehicleType = regularVehicleType;
+const String _electricVehicleType = electricVehicleType;
+const List<String> _plugTypes = boostPlugTypes;
+const List<String> _towTypes = towServiceTypes;
+
+class _TowTypeSelector extends StatelessWidget {
+  const _TowTypeSelector({
+    required this.selectedTowType,
+    required this.onTowTypeChanged,
   });
 
-  final String address;
-  final LatLng latLng;
-  final String vehicleType;
-  final String? plugType;
-}
-
-class _PickupSelectorSheet extends StatefulWidget {
-  const _PickupSelectorSheet();
-
-  @override
-  State<_PickupSelectorSheet> createState() => _PickupSelectorSheetState();
-}
-
-class _PickupSelectorSheetState extends State<_PickupSelectorSheet> {
-  final TextEditingController _addressController = TextEditingController();
-  bool _isSaving = false;
-  String? _error;
-  String _selectedVehicleType = _regularVehicleType;
-  String? _selectedPlugType = _plugTypes.first;
-
-  @override
-  void dispose() {
-    _addressController.dispose();
-    super.dispose();
-  }
-
-  Future<void> _saveAddressSearch() async {
-    final input = _addressController.text.trim();
-    if (input.isEmpty) {
-      setState(() => _error = 'Enter an address');
-      return;
-    }
-
-    if (!_isVehicleSelectionValid()) {
-      setState(() => _error = 'Select your EV plug type to continue');
-      return;
-    }
-
-    setState(() {
-      _isSaving = true;
-      _error = null;
-    });
-
-    try {
-      final locations = await locationFromAddress(input);
-      if (locations.isEmpty) {
-        setState(() => _error = 'Address not found');
-        return;
-      }
-
-      final selected = locations.first;
-      if (!mounted) return;
-      Navigator.of(context).pop(
-        _PickupSelection(
-          address: input,
-          latLng: LatLng(selected.latitude, selected.longitude),
-          vehicleType: _selectedVehicleType,
-          plugType: _selectedVehicleType == _electricVehicleType
-              ? _selectedPlugType
-              : null,
-        ),
-      );
-    } catch (_) {
-      setState(() => _error = 'Could not resolve address');
-    } finally {
-      if (mounted) {
-        setState(() => _isSaving = false);
-      }
-    }
-  }
-
-  Future<void> _saveCurrentLocation() async {
-    if (!_isVehicleSelectionValid()) {
-      setState(() => _error = 'Select your EV plug type to continue');
-      return;
-    }
-
-    setState(() {
-      _isSaving = true;
-      _error = null;
-    });
-
-    try {
-      LocationPermission permission = await Geolocator.checkPermission();
-      if (permission == LocationPermission.denied) {
-        permission = await Geolocator.requestPermission();
-      }
-
-      if (permission == LocationPermission.denied ||
-          permission == LocationPermission.deniedForever) {
-        setState(() => _error = 'Location permission denied');
-        return;
-      }
-
-      final position = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.high,
-      );
-
-      String displayAddress =
-          'Current location (${position.latitude.toStringAsFixed(5)}, ${position.longitude.toStringAsFixed(5)})';
-      try {
-        final places = await placemarkFromCoordinates(
-          position.latitude,
-          position.longitude,
-        );
-        if (places.isNotEmpty) {
-          final p = places.first;
-          displayAddress = [
-            if ((p.street ?? '').isNotEmpty) p.street,
-            if ((p.locality ?? '').isNotEmpty) p.locality,
-            if ((p.administrativeArea ?? '').isNotEmpty)
-              p.administrativeArea,
-          ].whereType<String>().join(', ');
-        }
-      } catch (_) {
-        // Keep coordinate fallback address.
-      }
-
-      if (!mounted) return;
-      Navigator.of(context).pop(
-        _PickupSelection(
-          address: displayAddress,
-          latLng: LatLng(position.latitude, position.longitude),
-          vehicleType: _selectedVehicleType,
-          plugType: _selectedVehicleType == _electricVehicleType
-              ? _selectedPlugType
-              : null,
-        ),
-      );
-    } catch (_) {
-      setState(() => _error = 'Could not access current location');
-    } finally {
-      if (mounted) {
-        setState(() => _isSaving = false);
-      }
-    }
-  }
-
-  bool _isVehicleSelectionValid() {
-    if (_selectedVehicleType == _regularVehicleType) {
-      return true;
-    }
-    return _selectedPlugType != null;
-  }
+  final String? selectedTowType;
+  final ValueChanged<String> onTowTypeChanged;
 
   @override
   Widget build(BuildContext context) {
-    final mediaQuery = MediaQuery.of(context);
-
-    return DefaultTabController(
-      length: 2,
-      child: SafeArea(
-        top: false,
-        child: ConstrainedBox(
-          constraints: BoxConstraints(
-            maxHeight: mediaQuery.size.height * 0.92,
-          ),
-          child: SingleChildScrollView(
-            padding: EdgeInsets.fromLTRB(
-              16,
-              12,
-              16,
-              16 + mediaQuery.viewInsets.bottom,
-            ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-            Container(
-              width: 44,
-              height: 4,
-              decoration: BoxDecoration(
-                color: Colors.grey[600],
-                borderRadius: BorderRadius.circular(2),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('Tow Service Type', style: Theme.of(context).textTheme.titleMedium),
+        const SizedBox(height: 10),
+        Wrap(
+          spacing: 10,
+          runSpacing: 10,
+          children: _towTypes.map((towType) {
+            final selected = selectedTowType == towType;
+            return ChoiceChip(
+              label: Text(towTypeLabel(towType)),
+              selected: selected,
+              selectedColor: const Color(0xFFF59E0B).withValues(alpha: 0.28),
+              labelStyle: TextStyle(
+                color: selected ? const Color(0xFF1A1A2E) : Colors.grey[700],
               ),
-            ),
-            const SizedBox(height: 12),
-            Text('Set Pickup Location', style: Theme.of(context).textTheme.titleLarge),
-            const SizedBox(height: 14),
-            _VehicleTypeSelector(
-              selectedVehicleType: _selectedVehicleType,
-              selectedPlugType: _selectedPlugType,
-              onVehicleTypeChanged: (vehicleType) {
-                setState(() {
-                  _selectedVehicleType = vehicleType;
-                  if (vehicleType == _regularVehicleType) {
-                    _selectedPlugType = null;
-                  } else {
-                    _selectedPlugType ??= _plugTypes.first;
-                  }
-                  _error = null;
-                });
-              },
-              onPlugTypeChanged: (plugType) {
-                setState(() {
-                  _selectedPlugType = plugType;
-                  _error = null;
-                });
-              },
-            ),
-            const SizedBox(height: 12),
-            const TabBar(
-              tabs: [
-                Tab(text: 'Enter Address'),
-                Tab(text: 'Use Current Location'),
-              ],
-            ),
-            const SizedBox(height: 12),
-            SizedBox(
-              height: 240,
-              child: TabBarView(
-                children: [
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      TextField(
-                        controller: _addressController,
-                        decoration: const InputDecoration(
-                          labelText: 'Address',
-                          prefixIcon: Icon(Icons.search),
-                        ),
-                        textInputAction: TextInputAction.search,
-                        onSubmitted: (_) => _saveAddressSearch(),
-                      ),
-                      const SizedBox(height: 12),
-                      ElevatedButton(
-                        onPressed: _isSaving ? null : _saveAddressSearch,
-                        child: _isSaving
-                            ? const SizedBox(
-                                width: 18,
-                                height: 18,
-                                child: CircularProgressIndicator(strokeWidth: 2),
-                              )
-                            : const Text('Save Pickup'),
-                      ),
-                    ],
-                  ),
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      const SizedBox(height: 6),
-                      Text(
-                        'Use your current GPS location as pickup address.',
-                        style: Theme.of(context)
-                            .textTheme
-                            .bodyMedium
-                            ?.copyWith(color: Colors.grey[400]),
-                      ),
-                      const SizedBox(height: 16),
-                      ElevatedButton.icon(
-                        onPressed: _isSaving ? null : _saveCurrentLocation,
-                        icon: const Icon(Icons.my_location),
-                        label: _isSaving
-                            ? const Text('Saving...')
-                            : const Text('Save Current Location'),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-            if (_error != null)
-              Padding(
-                padding: const EdgeInsets.only(top: 8),
-                child: Text(
-                  _error!,
-                  style: const TextStyle(color: Colors.redAccent),
-                ),
-              ),
-              ],
-            ),
-          ),
+              onSelected: (_) => onTowTypeChanged(towType),
+            );
+          }).toList(growable: false),
         ),
-      ),
+        const SizedBox(height: 10),
+        Text(
+          'Tow pricing starts at \$135.00 for car tow and \$250.00 for pickup/van tow, plus tax.',
+          style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.grey[700]),
+        ),
+      ],
     );
   }
 }
-
-const String _regularVehicleType = 'regular';
-const String _electricVehicleType = 'electric';
-const List<String> _plugTypes = <String>[
-  'J1772 Type 1',
-  'Type 2',
-  'CHAdeMO',
-  'CCS Combo',
-  'Tesla / NACS',
-];
 
 class _VehicleTypeSelector extends StatelessWidget {
   const _VehicleTypeSelector({
@@ -1409,7 +2356,7 @@ class _VehicleTypeSelector extends StatelessWidget {
     required this.onPlugTypeChanged,
   });
 
-  final String selectedVehicleType;
+  final String? selectedVehicleType;
   final String? selectedPlugType;
   final ValueChanged<String> onVehicleTypeChanged;
   final ValueChanged<String> onPlugTypeChanged;
@@ -1425,20 +2372,22 @@ class _VehicleTypeSelector extends StatelessWidget {
           children: [
             Expanded(
               child: _VehicleTypeCard(
-                title: 'Regular',
-                subtitle: 'Any car can boost it',
+                title: 'Regular Car Boost',
+                subtitle: 'Best for standard gas or hybrid vehicles',
                 icon: Icons.directions_car_filled,
                 selected: selectedVehicleType == _regularVehicleType,
+                accentColor: const Color(0xFF6366F1),
                 onTap: () => onVehicleTypeChanged(_regularVehicleType),
               ),
             ),
             const SizedBox(width: 10),
             Expanded(
               child: _VehicleTypeCard(
-                title: 'Electric',
-                subtitle: 'Choose your plug type',
+                title: 'Electric Car Boost',
+                subtitle: 'Choose your connector before requesting help',
                 icon: Icons.ev_station,
                 selected: selectedVehicleType == _electricVehicleType,
+                accentColor: const Color(0xFF22D3EE),
                 onTap: () => onVehicleTypeChanged(_electricVehicleType),
               ),
             ),
@@ -1471,6 +2420,7 @@ class _VehicleTypeCard extends StatelessWidget {
     required this.subtitle,
     required this.icon,
     required this.selected,
+    required this.accentColor,
     required this.onTap,
   });
 
@@ -1478,6 +2428,7 @@ class _VehicleTypeCard extends StatelessWidget {
   final String subtitle;
   final IconData icon;
   final bool selected;
+  final Color accentColor;
   final VoidCallback onTap;
 
   @override
@@ -1486,29 +2437,68 @@ class _VehicleTypeCard extends StatelessWidget {
       onTap: onTap,
       borderRadius: BorderRadius.circular(14),
       child: Container(
-        padding: const EdgeInsets.all(14),
+        constraints: const BoxConstraints(minHeight: 170),
+        padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
-          color: selected
-              ? const Color(0xFF6366F1).withValues(alpha: 0.14)
-              : Theme.of(context).colorScheme.surface,
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(
-            color: selected ? const Color(0xFF6366F1) : Colors.white12,
+          gradient: LinearGradient(
+            colors: selected
+                ? <Color>[
+                    accentColor.withValues(alpha: 0.10),
+                    Colors.white,
+                  ]
+                : <Color>[
+                    Colors.white,
+                    const Color(0xFFF2F2F7),
+                  ],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
           ),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(
+            color: selected ? accentColor : const Color(0xFFE0E0E8),
+            width: selected ? 1.6 : 1,
+          ),
+          boxShadow: selected
+              ? <BoxShadow>[
+                  BoxShadow(
+                    color: accentColor.withValues(alpha: 0.18),
+                    blurRadius: 24,
+                    offset: const Offset(0, 10),
+                  ),
+                ]
+              : null,
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon, color: selected ? const Color(0xFF6366F1) : Colors.grey[400]),
-            const SizedBox(height: 10),
+            Row(
+              children: [
+                Container(
+                  width: 48,
+                  height: 48,
+                  decoration: BoxDecoration(
+                    color: accentColor.withValues(alpha: selected ? 0.18 : 0.10),
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: Icon(icon, color: selected ? accentColor : Colors.grey[700]),
+                ),
+                const Spacer(),
+                if (selected)
+                  Icon(Icons.check_circle, color: accentColor),
+              ],
+            ),
+            const SizedBox(height: 14),
             Text(title, style: Theme.of(context).textTheme.titleSmall),
             const SizedBox(height: 4),
             Text(
               subtitle,
+              maxLines: 3,
+              overflow: TextOverflow.ellipsis,
               style: Theme.of(context)
                   .textTheme
                   .bodySmall
-                  ?.copyWith(color: Colors.grey[400]),
+                  ?.copyWith(color: Colors.grey[700]),
             ),
           ],
         ),
@@ -1542,7 +2532,7 @@ class _PlugTypeCard extends StatelessWidget {
               : Theme.of(context).colorScheme.surface,
           borderRadius: BorderRadius.circular(14),
           border: Border.all(
-            color: selected ? const Color(0xFF22D3EE) : Colors.white12,
+            color: selected ? const Color(0xFF22D3EE) : const Color(0xFFE8E8EE),
           ),
         ),
         child: Column(
@@ -1560,7 +2550,7 @@ class _PlugTypeCard extends StatelessWidget {
               style: Theme.of(context)
                   .textTheme
                   .bodySmall
-                  ?.copyWith(color: Colors.grey[400]),
+                  ?.copyWith(color: Colors.grey[700]),
             ),
           ],
         ),
@@ -1596,13 +2586,9 @@ class _PlugTypeIllustration extends StatelessWidget {
     return Container(
       height: 96,
       decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          colors: <Color>[Color(0xFF0F172A), Color(0xFF1E293B)],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
+        color: Colors.white,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.white10),
+        border: Border.all(color: const Color(0xFFE0E0E8)),
       ),
       child: Stack(
         children: [
@@ -1612,13 +2598,13 @@ class _PlugTypeIllustration extends StatelessWidget {
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
               decoration: BoxDecoration(
-                color: Colors.black.withValues(alpha: 0.22),
+                color: const Color(0xFF5500FF).withValues(alpha: 0.12),
                 borderRadius: BorderRadius.circular(999),
               ),
               child: Text(
                 _plugBadge(label),
                 style: const TextStyle(
-                  color: Color(0xFFBFDBFE),
+                  color: Color(0xFF5500FF),
                   fontSize: 10,
                   fontWeight: FontWeight.w700,
                   letterSpacing: 0.4,
@@ -1668,7 +2654,7 @@ class _PlugFacePainter extends CustomPainter {
 
     final bodyPaint = Paint()..color = const Color(0xFFE2E8F0);
     final shellPaint = Paint()..color = const Color(0xFFCBD5E1);
-    final pinPaint = Paint()..color = const Color(0xFF0F172A);
+    final pinPaint = Paint()..color = const Color(0xFF1A1A2E);
     final accentPaint = Paint()..color = const Color(0xFF38BDF8).withValues(alpha: 0.22);
 
     final cableStart = Offset(size.width * 0.16, size.height * 0.55);
@@ -1702,7 +2688,7 @@ class _PlugFacePainter extends CustomPainter {
       canvas.drawCircle(pin.$1, pin.$2, pinPaint);
     }
 
-    final capPaint = Paint()..color = const Color(0xFF0F172A).withValues(alpha: 0.12);
+    final capPaint = Paint()..color = const Color(0xFF1A1A2E).withValues(alpha: 0.12);
     canvas.drawRRect(
       RRect.fromRectAndRadius(
         Rect.fromLTWH(size.width * 0.43, size.height * 0.33, 12, size.height * 0.16),

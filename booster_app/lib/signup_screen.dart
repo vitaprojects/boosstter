@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'booster_logo.dart';
+import 'dart:math';
+import 'app_shell.dart';
 import 'auth_routing.dart';
-import 'home_screen.dart';
+import 'booster_logo.dart';
+import 'verification_screen.dart';
 
 class SignupScreen extends StatefulWidget {
   const SignupScreen({super.key});
@@ -13,34 +15,64 @@ class SignupScreen extends StatefulWidget {
 }
 
 class _SignupScreenState extends State<SignupScreen> {
+  static const double _kPrimaryButtonHeight = 52;
+  static const double _kPrimaryButtonRadius = 12;
+  static const double _kLogoToHeadingSpacing = 20;
+  static const double _kHeadingToSubtitleSpacing = 8;
+  static const double _kSubtitleToFormSpacing = 28;
+
   final _formKey = GlobalKey<FormState>();
+  final _fullNameController = TextEditingController();
+  final _addressController = TextEditingController();
+  final _phoneController = TextEditingController();
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
   final _confirmPasswordController = TextEditingController();
-  String _selectedRole = customerRole;
+  static const String _verificationType = 'phone';
   bool _isLoading = false;
 
+  static final RegExp _emailRegex = RegExp(r'^[^\s@]+@[^\s@]+\.[^\s@]+$');
+
+  String get _normalizedEmail => _emailController.text.trim().toLowerCase();
+
   Future<void> _signup() async {
+    if (!_formKey.currentState!.validate()) {
+      return;
+    }
+
     if (_passwordController.text != _confirmPasswordController.text) {
       _showErrorSnackBar('Passwords do not match', Icons.lock_outline);
       return;
     }
     setState(() => _isLoading = true);
     try {
-      final credential = await FirebaseAuth.instance.createUserWithEmailAndPassword(
-        email: _emailController.text.trim(),
-        password: _passwordController.text,
-      );
+      final credential = await FirebaseAuth.instance
+          .createUserWithEmailAndPassword(
+            email: _normalizedEmail,
+            password: _passwordController.text,
+          );
 
       final user = credential.user;
       if (user == null) {
         if (mounted) {
-          _showErrorSnackBar('Signup failed. Please try again.', Icons.error_outline);
+          _showErrorSnackBar(
+            'Signup failed. Please try again.',
+            Icons.error_outline,
+          );
         }
         return;
       }
 
-      final saved = await _saveUserToFirestore(user, role: _selectedRole);
+      // Generate verification code
+      final verificationCode = _generateVerificationCode();
+
+      // Save user profile with verification pending
+      final saved = await _saveUserToFirestore(
+        user,
+        role: customerRole,
+        verificationCode: verificationCode,
+        isVerified: false,
+      );
       if (!saved) {
         await _rollbackCreatedAccount(user);
         if (mounted) {
@@ -53,9 +85,18 @@ class _SignupScreenState extends State<SignupScreen> {
       }
 
       if (mounted) {
-        _showSuccessSnackBar('Account created successfully!');
         Navigator.of(context).pushAndRemoveUntil(
-          MaterialPageRoute(builder: (_) => const HomeScreen()),
+          MaterialPageRoute(
+            builder:
+                (_) => VerificationScreen(
+                  verificationCode: verificationCode,
+                  verificationType: _verificationType,
+                  email: _normalizedEmail,
+                  phone: _phoneController.text,
+                  userId: user.uid,
+                  fullName: _fullNameController.text,
+                ),
+          ),
           (route) => false,
         );
       }
@@ -85,19 +126,43 @@ class _SignupScreenState extends State<SignupScreen> {
       }
       if (mounted) _showErrorSnackBar(message, icon);
     } catch (e) {
-      if (mounted) _showErrorSnackBar('Network error. Please check your connection', Icons.cloud_off);
+      if (mounted)
+        _showErrorSnackBar(
+          'Network error. Please check your connection',
+          Icons.cloud_off,
+        );
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
   }
 
-  Future<bool> _saveUserToFirestore(User user, {required String role}) async {
+  String _generateVerificationCode() {
+    return (100000 + Random().nextInt(900000)).toString();
+  }
+
+  String _normalizePhone(String value) {
+    return value.replaceAll(RegExp(r'[^0-9+]'), '');
+  }
+
+  Future<bool> _saveUserToFirestore(
+    User user, {
+    required String role,
+    required String verificationCode,
+    required bool isVerified,
+  }) async {
     try {
       await FirebaseFirestore.instance.collection('users').doc(user.uid).set({
         'userId': user.uid,
+        'fullName': _fullNameController.text.trim(),
+        'address': _addressController.text.trim(),
+        'phone': _normalizePhone(_phoneController.text.trim()),
         'email': user.email,
         'role': role,
         'isAvailable': false,
+        'isVerified': isVerified,
+        'verificationCode': verificationCode,
+        'verificationType': _verificationType,
+        'boostTypes': [], // Will be set after verification
         'latitude': 0.0,
         'longitude': 0.0,
         'isSubscribed': false,
@@ -105,16 +170,27 @@ class _SignupScreenState extends State<SignupScreen> {
       });
       return true;
     } on FirebaseException catch (e) {
-      if (mounted) _showErrorSnackBar('Failed to save your profile (${e.code}). Please try again.', Icons.cloud_off);
+      if (mounted)
+        _showErrorSnackBar(
+          'Failed to save your profile (${e.code}). Please try again.',
+          Icons.cloud_off,
+        );
     } catch (e) {
-      if (mounted) _showErrorSnackBar('Failed to save your profile. Please try again.', Icons.cloud_off);
+      if (mounted)
+        _showErrorSnackBar(
+          'Failed to save your profile. Please try again.',
+          Icons.cloud_off,
+        );
     }
     return false;
   }
 
   Future<void> _rollbackCreatedAccount(User user) async {
     try {
-      await FirebaseFirestore.instance.collection('users').doc(user.uid).delete();
+      await FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .delete();
     } catch (_) {
       // Ignore cleanup errors and continue rollback.
     }
@@ -127,138 +203,231 @@ class _SignupScreenState extends State<SignupScreen> {
   }
 
   void _showErrorSnackBar(String message, IconData icon) {
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Row(children: [
-        Icon(icon, color: Colors.white),
-        const SizedBox(width: 12),
-        Expanded(child: Text(message, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w500))),
-      ]),
-      backgroundColor: Colors.red[700],
-      behavior: SnackBarBehavior.floating,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-      margin: const EdgeInsets.all(16),
-      duration: const Duration(seconds: 4),
-    ));
-  }
-
-  void _showSuccessSnackBar(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Row(children: [
-        const Icon(Icons.check_circle, color: Colors.white),
-        const SizedBox(width: 12),
-        Expanded(child: Text(message, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w500))),
-      ]),
-      backgroundColor: Colors.green[700],
-      behavior: SnackBarBehavior.floating,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-      margin: const EdgeInsets.all(16),
-      duration: const Duration(seconds: 3),
-    ));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            Icon(icon, color: Colors.white),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                message,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ),
+          ],
+        ),
+        backgroundColor: Colors.red[700],
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+        margin: const EdgeInsets.all(16),
+        duration: const Duration(seconds: 4),
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('Booster')),
-      body: SafeArea(
-        child: LayoutBuilder(builder: (context, constraints) {
-          return SingleChildScrollView(
-            padding: EdgeInsets.fromLTRB(24, 24, 24, 24 + MediaQuery.of(context).viewInsets.bottom),
-            child: ConstrainedBox(
-              constraints: BoxConstraints(minHeight: constraints.maxHeight - 48),
-              child: Form(
-                key: _formKey,
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    const Center(child: BoosterLogo(size: 84, compact: true)),
-                    const SizedBox(height: 32),
-                    Text('Create Account', style: Theme.of(context).textTheme.headlineMedium, textAlign: TextAlign.center),
-                    const SizedBox(height: 8),
-                    Text('Join Booster', style: Theme.of(context).textTheme.bodyLarge?.copyWith(color: Colors.grey[400]), textAlign: TextAlign.center),
-                    const SizedBox(height: 40),
-                    TextFormField(
-                      controller: _emailController,
-                      decoration: const InputDecoration(labelText: 'Email', prefixIcon: Icon(Icons.email)),
-                      keyboardType: TextInputType.emailAddress,
-                      validator: (value) {
-                        if (value == null || value.isEmpty) return 'Please enter your email';
-                        return null;
-                      },
-                    ),
-                    const SizedBox(height: 20),
-                    TextFormField(
-                      controller: _passwordController,
-                      decoration: const InputDecoration(labelText: 'Password', prefixIcon: Icon(Icons.lock)),
-                      obscureText: true,
-                      validator: (value) {
-                        if (value == null || value.isEmpty) return 'Please enter your password';
-                        if (value.length < 6) return 'Password must be at least 6 characters';
-                        return null;
-                      },
-                    ),
-                    const SizedBox(height: 20),
-                    TextFormField(
-                      controller: _confirmPasswordController,
-                      decoration: const InputDecoration(labelText: 'Confirm Password', prefixIcon: Icon(Icons.lock_outline)),
-                      obscureText: true,
-                      validator: (value) {
-                        if (value == null || value.isEmpty) return 'Please confirm your password';
-                        return null;
-                      },
-                    ),
-                    const SizedBox(height: 20),
-                    DropdownButtonFormField<String>(
-                      value: _selectedRole,
-                      decoration: const InputDecoration(
-                        labelText: 'I am joining as',
-                        prefixIcon: Icon(Icons.person_outline),
-                      ),
-                      items: const [
-                        DropdownMenuItem(
-                          value: customerRole,
-                          child: Text('Customer (need a boost)'),
-                        ),
-                        DropdownMenuItem(
-                          value: driverRole,
-                          child: Text('Driver (provide boosts)'),
-                        ),
-                      ],
-                      onChanged: _isLoading
-                          ? null
-                          : (value) {
-                              if (value == null) {
-                                return;
-                              }
-                              setState(() => _selectedRole = value);
-                            },
-                    ),
-                    const SizedBox(height: 32),
-                    _isLoading
-                        ? const SizedBox(height: 50, child: Center(child: CircularProgressIndicator()))
-                        : ElevatedButton(
-                            onPressed: _signup,
-                            style: ElevatedButton.styleFrom(minimumSize: const Size(double.infinity, 50), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
-                            child: const Text('Sign Up'),
-                          ),
-                    const SizedBox(height: 16),
-                    TextButton(
-                      onPressed: () => Navigator.pop(context),
-                      child: const Text('Already have an account? Login'),
-                    ),
-                  ],
+      body: BoosterPageBackground(
+        child: SafeArea(
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              return SingleChildScrollView(
+                padding: EdgeInsets.fromLTRB(
+                  24,
+                  24,
+                  24,
+                  24 + MediaQuery.of(context).viewInsets.bottom,
                 ),
-              ),
-            ),
-          );
-        }),
+                keyboardDismissBehavior:
+                    ScrollViewKeyboardDismissBehavior.onDrag,
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(
+                    minHeight: constraints.maxHeight - 48,
+                  ),
+                  child: Form(
+                    key: _formKey,
+                    child: BoosterSurfaceCard(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          const Center(
+                            child: BoosterLogo(
+                              size: 98,
+                              compact: true,
+                              showWordmark: true,
+                            ),
+                          ),
+                          const SizedBox(height: _kLogoToHeadingSpacing),
+                          Text(
+                            'Create Account',
+                            style: Theme.of(context).textTheme.headlineMedium,
+                            textAlign: TextAlign.center,
+                          ),
+                          const SizedBox(height: _kHeadingToSubtitleSpacing),
+                          Text(
+                            'Join Booster',
+                            style: Theme.of(
+                              context,
+                            ).textTheme.bodyLarge?.copyWith(
+                              color: Colors.grey[100],
+                              fontWeight: FontWeight.w600,
+                            ),
+                            textAlign: TextAlign.center,
+                          ),
+                          const SizedBox(height: _kSubtitleToFormSpacing),
+                          TextFormField(
+                            controller: _fullNameController,
+                            decoration: const InputDecoration(
+                              labelText: 'Full Name',
+                              prefixIcon: Icon(Icons.person_outline),
+                            ),
+                            validator: (value) {
+                              final name = value?.trim() ?? '';
+                              if (name.isEmpty)
+                                return 'Please enter your full name';
+                              if (name.length < 2)
+                                return 'Name looks too short';
+                              return null;
+                            },
+                          ),
+                          const SizedBox(height: 20),
+                          TextFormField(
+                            controller: _addressController,
+                            decoration: const InputDecoration(
+                              labelText: 'Address',
+                              prefixIcon: Icon(Icons.location_on_outlined),
+                            ),
+                            minLines: 2,
+                            maxLines: 3,
+                            validator: (value) {
+                              final address = value?.trim() ?? '';
+                              if (address.isEmpty)
+                                return 'Please enter your address';
+                              if (address.length < 8)
+                                return 'Please enter a complete address';
+                              return null;
+                            },
+                          ),
+                          const SizedBox(height: 20),
+                          TextFormField(
+                            controller: _phoneController,
+                            decoration: const InputDecoration(
+                              labelText: 'Phone Number',
+                              prefixIcon: Icon(Icons.phone_outlined),
+                            ),
+                            keyboardType: TextInputType.phone,
+                            validator: (value) {
+                              final normalized = _normalizePhone(value ?? '');
+                              if (normalized.isEmpty)
+                                return 'Please enter your phone number';
+                              final digitsOnly = normalized.replaceAll(
+                                RegExp(r'[^0-9]'),
+                                '',
+                              );
+                              if (digitsOnly.length < 10)
+                                return 'Please enter a valid phone number';
+                              return null;
+                            },
+                          ),
+                          const SizedBox(height: 20),
+                          TextFormField(
+                            controller: _emailController,
+                            decoration: const InputDecoration(
+                              labelText: 'Email',
+                              prefixIcon: Icon(Icons.email_outlined),
+                            ),
+                            keyboardType: TextInputType.emailAddress,
+                            validator: (value) {
+                              final email = value?.trim() ?? '';
+                              if (email.isEmpty)
+                                return 'Please enter your email';
+                              if (!_emailRegex.hasMatch(email))
+                                return 'Please enter a valid email';
+                              return null;
+                            },
+                          ),
+                          const SizedBox(height: 20),
+                          TextFormField(
+                            controller: _passwordController,
+                            decoration: const InputDecoration(
+                              labelText: 'Password',
+                              prefixIcon: Icon(Icons.lock_outline),
+                            ),
+                            obscureText: true,
+                            validator: (value) {
+                              if (value == null || value.isEmpty)
+                                return 'Please enter your password';
+                              if (value.length < 6)
+                                return 'Password must be at least 6 characters';
+                              return null;
+                            },
+                          ),
+                          const SizedBox(height: 20),
+                          TextFormField(
+                            controller: _confirmPasswordController,
+                            decoration: const InputDecoration(
+                              labelText: 'Confirm Password',
+                              prefixIcon: Icon(Icons.lock_outline),
+                            ),
+                            obscureText: true,
+                            validator: (value) {
+                              if (value == null || value.isEmpty)
+                                return 'Please confirm your password';
+                              return null;
+                            },
+                          ),
+                          const SizedBox(height: 32),
+                          _isLoading
+                              ? const SizedBox(
+                                height: 50,
+                                child: Center(
+                                  child: CircularProgressIndicator(),
+                                ),
+                              )
+                              : ElevatedButton(
+                                onPressed: _signup,
+                                style: ElevatedButton.styleFrom(
+                                  minimumSize: const Size(
+                                    double.infinity,
+                                    _kPrimaryButtonHeight,
+                                  ),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(
+                                      _kPrimaryButtonRadius,
+                                    ),
+                                  ),
+                                ),
+                                child: const Text('Sign Up'),
+                              ),
+                          const SizedBox(height: 16),
+                          TextButton(
+                            onPressed: () => Navigator.pop(context),
+                            child: const Text('Already have an account? Login'),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
       ),
     );
   }
 
   @override
   void dispose() {
+    _fullNameController.dispose();
+    _addressController.dispose();
+    _phoneController.dispose();
     _emailController.dispose();
     _passwordController.dispose();
     _confirmPasswordController.dispose();

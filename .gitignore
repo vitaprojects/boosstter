@@ -30,3 +30,4 @@ booster_app/functions/node_modules/
 
 # Local APK backup artifacts
 saved-builds/
+app-debug.apk

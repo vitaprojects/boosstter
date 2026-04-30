@@ -133,10 +133,11 @@ void _logFirebaseConfiguration() {
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
 
-  // Brand colors
-  static const Color primaryColor = Color(0xFF6366F1); // Indigo
-  static const Color secondaryColor = Color(0xFF8B5CF6); // Purple
-  static const Color accentColor = Color(0xFF06B6D4); // Cyan
+  // Plum-inspired light theme palette
+  static const Color primaryColor = Color(0xFF5500FF);   // Vibrant purple
+  static const Color secondaryColor = Color(0xFF7B3FE4); // Soft violet
+  static const Color accentColor = Color(0xFF5500FF);    // Same purple for accent
+  static const Color highlightColor = Color(0xFF5500FF); // Purple highlights
 
   // This widget is the root of your application.
   @override
@@ -146,29 +147,33 @@ class MyApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         useMaterial3: true,
-        colorScheme: ColorScheme.dark(
+        fontFamily: 'sans-serif',
+        colorScheme: ColorScheme.light(
           primary: primaryColor,
           secondary: secondaryColor,
           tertiary: accentColor,
-          surface: const Color(0xFF1E1E1E),
+          surface: Colors.white,
           onPrimary: Colors.white,
           onSecondary: Colors.white,
-          onSurface: Colors.white,
+          onTertiary: Colors.white,
+          onSurface: const Color(0xFF1A1A2E),
         ),
-        scaffoldBackgroundColor: const Color(0xFF121212),
-        appBarTheme: AppBarTheme(
-          backgroundColor: const Color(0xFF1E1E1E),
-          foregroundColor: Colors.white,
+        scaffoldBackgroundColor: const Color(0xFFF2F2F7),
+        appBarTheme: const AppBarTheme(
+          backgroundColor: Colors.white,
+          foregroundColor: Color(0xFF1A1A2E),
           elevation: 0,
-          titleTextStyle: const TextStyle(
-            fontSize: 20,
-            fontWeight: FontWeight.w600,
-            color: Colors.white,
+          surfaceTintColor: Colors.transparent,
+          titleTextStyle: TextStyle(
+            fontSize: 21,
+            fontWeight: FontWeight.w700,
+            color: Color(0xFF1A1A2E),
           ),
         ),
-        cardTheme: CardTheme(
-          color: const Color(0xFF2A2A2A),
-          elevation: 4,
+        cardTheme: CardThemeData(
+          color: Colors.white,
+          elevation: 1,
+          shadowColor: Colors.black12,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(16),
           ),
@@ -179,10 +184,20 @@ class MyApp extends StatelessWidget {
             foregroundColor: Colors.white,
             padding: const EdgeInsets.symmetric(vertical: 16),
             shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
+              borderRadius: BorderRadius.circular(14),
             ),
             minimumSize: const Size(double.infinity, 50),
-            elevation: 2,
+            elevation: 0,
+            textStyle: const TextStyle(fontWeight: FontWeight.w700),
+          ),
+        ),
+        filledButtonTheme: FilledButtonThemeData(
+          style: FilledButton.styleFrom(
+            backgroundColor: primaryColor,
+            foregroundColor: Colors.white,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(14),
+            ),
           ),
         ),
         textButtonTheme: TextButtonThemeData(
@@ -193,66 +208,81 @@ class MyApp extends StatelessWidget {
         ),
         inputDecorationTheme: InputDecorationTheme(
           filled: true,
-          fillColor: const Color(0xFF2A2A2A),
+          fillColor: const Color(0xFFF2F2F7),
           border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(12),
-            borderSide: BorderSide.none,
+            borderRadius: BorderRadius.circular(14),
+            borderSide: const BorderSide(color: Color(0xFFE0E0E8)),
+          ),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(14),
+            borderSide: const BorderSide(color: Color(0xFFE0E0E8)),
           ),
           focusedBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(12),
-            borderSide: BorderSide(color: primaryColor, width: 2),
+            borderRadius: BorderRadius.circular(14),
+            borderSide: const BorderSide(color: primaryColor, width: 1.8),
           ),
-          labelStyle: const TextStyle(color: Colors.white70),
-          prefixIconColor: Colors.white70,
+          labelStyle: const TextStyle(color: Color(0xFF8A8A9A)),
+          prefixIconColor: Color(0xFF8A8A9A),
         ),
         bottomSheetTheme: const BottomSheetThemeData(
-          backgroundColor: Color(0xFF1E1E1E),
+          backgroundColor: Colors.white,
+          surfaceTintColor: Colors.transparent,
           shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+            borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
           ),
+        ),
+        bottomNavigationBarTheme: const BottomNavigationBarThemeData(
+          backgroundColor: Colors.white,
+          selectedItemColor: primaryColor,
+          unselectedItemColor: Color(0xFFAAAAAA),
+          elevation: 8,
+        ),
+        dividerTheme: const DividerThemeData(
+          color: Color(0xFFF0F0F5),
+          thickness: 1,
         ),
         textTheme: const TextTheme(
           headlineLarge: TextStyle(
             fontSize: 32,
             fontWeight: FontWeight.bold,
-            color: Colors.white,
+            color: Color(0xFF1A1A2E),
           ),
           headlineMedium: TextStyle(
             fontSize: 28,
             fontWeight: FontWeight.w600,
-            color: Colors.white,
+            color: Color(0xFF1A1A2E),
           ),
           headlineSmall: TextStyle(
             fontSize: 24,
             fontWeight: FontWeight.w600,
-            color: Colors.white,
+            color: Color(0xFF1A1A2E),
           ),
           titleLarge: TextStyle(
             fontSize: 22,
             fontWeight: FontWeight.w600,
-            color: Colors.white,
+            color: Color(0xFF1A1A2E),
           ),
           titleMedium: TextStyle(
             fontSize: 18,
             fontWeight: FontWeight.w500,
-            color: Colors.white,
+            color: Color(0xFF1A1A2E),
           ),
           titleSmall: TextStyle(
             fontSize: 16,
             fontWeight: FontWeight.w500,
-            color: Colors.white,
+            color: Color(0xFF1A1A2E),
           ),
           bodyLarge: TextStyle(
             fontSize: 16,
-            color: Colors.white,
+            color: Color(0xFF1A1A2E),
           ),
           bodyMedium: TextStyle(
             fontSize: 14,
-            color: Colors.white,
+            color: Color(0xFF1A1A2E),
           ),
           bodySmall: TextStyle(
             fontSize: 12,
-            color: Colors.white70,
+            color: Color(0xFF8A8A9A),
           ),
         ),
       ),
