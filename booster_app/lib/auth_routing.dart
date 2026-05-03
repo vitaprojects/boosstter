@@ -1,8 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 
-import 'customer_screen.dart';
-import 'driver_screen.dart';
+import 'home_screen.dart';
 
 const String customerRole = 'customer';
 const String driverRole = 'driver';
@@ -27,11 +26,11 @@ bool isSupportedRole(String? role) {
 Widget destinationForRole(String role) {
   switch (role) {
     case customerRole:
-      return const CustomerScreen();
+      return const HomeScreen();
     case driverRole:
-      return const DriverScreen();
+      return const HomeScreen();
     default:
-      return const CustomerScreen();
+      return const HomeScreen();
   }
 }
 

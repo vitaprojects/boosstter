@@ -6,6 +6,8 @@ import 'app_shell.dart';
 import 'login_screen.dart';
 import 'home_screen.dart';
 import 'customer_screen.dart';
+import 'customer_requests_tab_screen.dart';
+import 'orders_landing_screen.dart';
 import 'provider_status_screen.dart';
 import 'driver_screen.dart';
 import 'main_bottom_nav.dart';
@@ -43,7 +45,7 @@ class ProfileScreen extends StatelessWidget {
         destination = const ProviderStatusScreen();
         break;
       case MainTab.orders:
-        destination = const DriverScreen();
+        destination = const OrdersLandingScreen();
         break;
       case MainTab.profile:
         return;

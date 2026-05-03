@@ -4,8 +4,10 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 
 import 'app_shell.dart';
 import 'boost_service_options.dart';
+import 'customer_requests_tab_screen.dart';
 import 'customer_screen.dart';
 import 'driver_screen.dart';
+import 'orders_landing_screen.dart';
 import 'provider_status_screen.dart';
 import 'profile_screen.dart';
 
@@ -33,7 +35,7 @@ class _HomeScreenState extends State<HomeScreen> {
       color: Color(0xFFEA3DFF),
     ),
     _MainTabVisual(
-      label: 'Orders',
+      label: 'Orders NEW',
       icon: Icons.radar_outlined,
       activeIcon: Icons.radar,
       color: Color(0xFF00E5FF),
@@ -78,7 +80,7 @@ class _HomeScreenState extends State<HomeScreen> {
         key: ValueKey<String>('request-$_requestTabVersion'),
       ),
       const ProviderStatusScreen(showBottomNav: false),
-      const DriverScreen(showBottomNav: false),
+      const OrdersLandingScreen(showBottomNav: false),
       const ProfileScreen(showBottomNav: false),
     ];
   }
@@ -223,32 +225,32 @@ class _MainServiceHub extends StatelessWidget {
               ),
               const SizedBox(height: 18),
               _ServiceChoiceCard(
-                title: 'Need a Boost?',
+                title: 'Get a Battery Boost',
                 subtitle:
-                    'Request roadside battery assistance and match with nearby providers.',
+                    'Request roadside jump-start help and get matched with nearby providers.',
                 icon: Icons.bolt,
                 accent: const Color(0xFF5500FF),
-                cta: 'Start Boost Request',
+                cta: 'Request a Boost',
                 onTap: () => _openNeedBoost(context),
               ),
               const SizedBox(height: 12),
               _ServiceChoiceCard(
-                title: 'Need a Tow?',
+                title: 'Get a Tow',
                 subtitle:
-                    'Request tow support and provide your pickup details for dispatch.',
+                    'Request towing assistance and share your pickup details for dispatch.',
                 icon: Icons.local_shipping,
                 accent: const Color(0xFF0EA5E9),
-                cta: 'Start Tow Request',
+                cta: 'Request a Tow',
                 onTap: () => _openNeedTow(context),
               ),
               const SizedBox(height: 12),
               _ServiceChoiceCard(
-                title: 'Offer a Boost or Tow?',
+                title: 'Provide Boost or Tow Services',
                 subtitle:
-                    'Set your provider profile, go available, and receive nearby jobs.',
+                    'Set up your provider profile, go available, and receive nearby job requests.',
                 icon: Icons.support_agent,
                 accent: const Color(0xFF16A34A),
-                cta: 'Open Provider Setup',
+                cta: 'Set Up Provider Profile',
                 onTap: () => _openOfferService(context),
               ),
             ],

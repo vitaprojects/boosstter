@@ -12,6 +12,8 @@ import 'request_lifecycle.dart';
 import 'new_order_notification_screen.dart';
 import 'order_details_screen.dart';
 import 'route_metrics_service.dart';
+import 'customer_requests_tab_screen.dart';
+import 'orders_landing_screen.dart';
 import 'home_screen.dart';
 import 'customer_screen.dart';
 import 'profile_screen.dart';
@@ -165,12 +167,20 @@ class _DriverScreenState extends State<DriverScreen> {
         .collection('requests')
         .where('driverId', isEqualTo: user.uid)
         .where('status', whereIn: ['accepted', 'en_route', 'arrived', 'paid'])
-        .orderBy('timestamp', descending: true)
-        .limit(1)
+        .limit(20)
         .snapshots()
         .listen((snap) {
           if (!mounted) return;
-          if (snap.docs.isEmpty) {
+          final docs = List<QueryDocumentSnapshot<Map<String, dynamic>>>.from(snap.docs)
+            ..sort((a, b) {
+              final aTs = a.data()['timestamp'] as Timestamp?;
+              final bTs = b.data()['timestamp'] as Timestamp?;
+              final aMs = aTs?.millisecondsSinceEpoch ?? 0;
+              final bMs = bTs?.millisecondsSinceEpoch ?? 0;
+              return bMs.compareTo(aMs);
+            });
+
+          if (docs.isEmpty) {
             setState(() {
               _activeRequestId = null;
               _activeRequestStatus = null;
@@ -185,7 +195,7 @@ class _DriverScreenState extends State<DriverScreen> {
             // Start watching for new incoming orders once active job is cleared
             _watchIncomingOrders();
           } else {
-            final doc = snap.docs.first;
+            final doc = docs.first;
             final data = doc.data();
             setState(() {
               _activeRequestId = doc.id;
@@ -209,37 +219,45 @@ class _DriverScreenState extends State<DriverScreen> {
     if (user == null || !_isAvailable) return;
 
     _incomingOrdersSub?.cancel();
-    // Simplified query: just filter by notifiedDriverIds to avoid composite index requirement
-    // Additional filtering (status, driverId) done client-side
+    // Query avoids orderBy to prevent composite index requirement.
+    // Additional filtering and sorting are done client-side.
     _incomingOrdersSub = FirebaseFirestore.instance
         .collection('requests')
         .where('notifiedDriverIds', arrayContains: user.uid)
-        .orderBy('timestamp', descending: true)
-        .limit(20) // Limit to recent orders for performance
+        .limit(50)
         .snapshots()
         .listen((snap) {
           if (!mounted) return;
-          
-          for (final doc in snap.docs) {
+
+          final docs = List<QueryDocumentSnapshot<Map<String, dynamic>>>.from(snap.docs)
+            ..sort((a, b) {
+              final aTs = a.data()['timestamp'] as Timestamp?;
+              final bTs = b.data()['timestamp'] as Timestamp?;
+              final aMs = aTs?.millisecondsSinceEpoch ?? 0;
+              final bMs = bTs?.millisecondsSinceEpoch ?? 0;
+              return bMs.compareTo(aMs);
+            });
+
+          for (final doc in docs.take(20)) {
             final data = doc.data();
-            
+
             // Client-side filtering: only show if still pending and not assigned
             final status = data['status']?.toString() ?? '';
             final driverId = data['driverId']?.toString() ?? '';
-            
+
             if (status != 'pending' || driverId.isNotEmpty) {
               continue; // Skip if already accepted or not pending
             }
-            
+
             final requestId = doc.id;
-            
+
             // Only show notification once per order
             if (_shownOrderNotifications.contains(requestId)) {
               continue;
             }
-            
+
             _shownOrderNotifications.add(requestId);
-            
+
             final serviceType = data['serviceType']?.toString() ?? _serviceTypeBoost;
             final vehicleType = data['vehicleType']?.toString() ?? 'regular';
             final plugType = data['plugType']?.toString() ?? '';
@@ -667,6 +685,8 @@ class _DriverScreenState extends State<DriverScreen> {
 
   @override
   Widget build(BuildContext context) {
+    return OrdersLandingScreen(showBottomNav: widget.showBottomNav);
+
     return Scaffold(
       appBar: AppBar(
         leading: IconButton(
@@ -1168,12 +1188,11 @@ class _DriverScreenState extends State<DriverScreen> {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return const SizedBox.shrink();
 
-    return StreamBuilder<QuerySnapshot>(
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
       stream: FirebaseFirestore.instance
           .collection('requests')
           .where('notifiedDriverIds', arrayContains: user.uid)
-          .orderBy('timestamp', descending: true)
-          .limit(20)
+          .limit(50)
           .snapshots(),
       builder: (context, snapshot) {
         if (snapshot.hasError) {
@@ -1185,14 +1204,22 @@ class _DriverScreenState extends State<DriverScreen> {
         }
         final docs = snapshot.data!.docs
             .where((doc) {
-              final data = doc.data() as Map<String, dynamic>;
+              final data = doc.data();
               final status = data['status']?.toString() ?? '';
               final driverId = data['driverId']?.toString() ?? '';
               return status == 'pending' && driverId.isEmpty;
             })
-            .toList(growable: false);
-          _primeRouteMetrics(docs);
-        if (docs.isEmpty) {
+            .toList(growable: true)
+          ..sort((a, b) {
+            final aTs = a.data()['timestamp'] as Timestamp?;
+            final bTs = b.data()['timestamp'] as Timestamp?;
+            final aMs = aTs?.millisecondsSinceEpoch ?? 0;
+            final bMs = bTs?.millisecondsSinceEpoch ?? 0;
+            return bMs.compareTo(aMs);
+          });
+        final recentDocs = docs.take(20).toList(growable: false);
+        _primeRouteMetrics(recentDocs);
+        if (recentDocs.isEmpty) {
           return Container(
             padding: const EdgeInsets.all(32),
             alignment: Alignment.center,
@@ -1209,8 +1236,8 @@ class _DriverScreenState extends State<DriverScreen> {
           );
         }
         return Column(
-          children: docs.map((doc) {
-            final data = doc.data() as Map<String, dynamic>;
+          children: recentDocs.map((doc) {
+            final data = doc.data();
             final address = data['pickupAddress']?.toString() ?? 'Unknown location';
             final ts = data['timestamp'] as Timestamp?;
             final timeAgo = ts != null

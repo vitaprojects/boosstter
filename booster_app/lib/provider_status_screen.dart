@@ -5,7 +5,7 @@ import 'package:geolocator/geolocator.dart';
 
 import 'app_shell.dart';
 import 'boost_service_options.dart';
-import 'driver_screen.dart';
+import 'orders_landing_screen.dart';
 import 'home_screen.dart';
 import 'customer_screen.dart';
 import 'profile_screen.dart';
@@ -310,7 +310,7 @@ class _ProviderStatusScreenState extends State<ProviderStatusScreen> {
       case MainTab.provider:
         return;
       case MainTab.orders:
-        destination = const DriverScreen();
+        destination = const OrdersLandingScreen();
         break;
       case MainTab.profile:
         destination = const ProfileScreen();
@@ -504,20 +504,14 @@ class _ProviderStatusScreenState extends State<ProviderStatusScreen> {
                     width: double.infinity,
                     child: ElevatedButton.icon(
                       onPressed: () {
-                        ensureSubscribedForAction(
-                          context,
-                          purpose: 'provide_service',
-                        ).then((canProceed) {
-                          if (!canProceed || !context.mounted) {
-                            return;
-                          }
-                          Navigator.of(context).push(
-                            MaterialPageRoute(builder: (_) => const DriverScreen()),
-                          );
-                        });
+                        Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) => const OrdersLandingScreen(),
+                          ),
+                        );
                       },
                       icon: const Icon(Icons.notifications_active_outlined),
-                      label: const Text('Open Order Console'),
+                      label: const Text('Open Orders Page'),
                     ),
                   ),
                   if (_isSaving) ...[

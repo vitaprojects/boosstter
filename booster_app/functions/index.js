@@ -244,8 +244,18 @@ exports.dispatchBoosterNotifications = onCall(
       throw new HttpsError('permission-denied', 'You can only dispatch your own request.');
     }
 
-    if (boostRequest.status !== 'paid') {
-      throw new HttpsError('failed-precondition', 'Payment must be completed before dispatch.');
+    const dispatchAllowedStatuses = new Set([
+      'paid',
+      'pending',
+      'searching',
+      'no_boosters_available',
+    ]);
+    const requestStatus = String(boostRequest.status || '');
+    if (!dispatchAllowedStatuses.has(requestStatus)) {
+      throw new HttpsError(
+        'failed-precondition',
+        'Request is not in a dispatchable state. Complete payment first.',
+      );
     }
 
     const pickupLat = Number(boostRequest.pickupLatitude);
