@@ -44,10 +44,14 @@ jobs:
           STAMP=$(date -u +'%Y-%m-%d_%H-%M-%S')
           APK_SRC=booster_app/build/app/outputs/flutter-apk/app-debug.apk
           APK_NAME="app-debug-${STAMP}.apk"
+          LATEST_APK_NAME="app-debug-latest.apk"
           cp "$APK_SRC" "$APK_NAME"
+          cp "$APK_SRC" "$LATEST_APK_NAME"
           sha256sum "$APK_NAME" > "${APK_NAME}.sha256"
+          sha256sum "$LATEST_APK_NAME" > "${LATEST_APK_NAME}.sha256"
           echo "stamp=${STAMP}" >> "$GITHUB_OUTPUT"
           echo "apk_name=${APK_NAME}" >> "$GITHUB_OUTPUT"
+          echo "latest_apk_name=${LATEST_APK_NAME}" >> "$GITHUB_OUTPUT"
           echo "tag=apk-debug-${STAMP}" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub prerelease
@@ -71,5 +75,23 @@ jobs:
           files: |
             ${{ steps.stamp.outputs.apk_name }}
             ${{ steps.stamp.outputs.apk_name }}.sha256
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create or update latest APK release (stable URL)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: apk-debug-latest
+          name: "Debug APK Latest"
+          prerelease: true
+          body: |
+            Latest debug APK from branch `${{ github.ref_name }}` — commit `${{ github.sha }}`.
+
+            Permanent download URL:
+            https://github.com/${{ github.repository }}/releases/download/apk-debug-latest/app-debug-latest.apk
+          overwrite_files: true
+          files: |
+            ${{ steps.stamp.outputs.latest_apk_name }}
+            ${{ steps.stamp.outputs.latest_apk_name }}.sha256
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
