@@ -146,29 +146,29 @@ class MyApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         useMaterial3: true,
-        colorScheme: ColorScheme.dark(
+        colorScheme: ColorScheme.light(
           primary: primaryColor,
           secondary: secondaryColor,
           tertiary: accentColor,
-          surface: const Color(0xFF1E1E1E),
+          surface: Colors.white,
           onPrimary: Colors.white,
           onSecondary: Colors.white,
-          onSurface: Colors.white,
+          onSurface: const Color(0xFF111827),
         ),
-        scaffoldBackgroundColor: const Color(0xFF121212),
+        scaffoldBackgroundColor: Colors.white,
         appBarTheme: AppBarTheme(
-          backgroundColor: const Color(0xFF1E1E1E),
-          foregroundColor: Colors.white,
+          backgroundColor: Colors.white,
+          foregroundColor: const Color(0xFF111827),
           elevation: 0,
           titleTextStyle: const TextStyle(
             fontSize: 20,
             fontWeight: FontWeight.w600,
-            color: Colors.white,
+            color: Color(0xFF111827),
           ),
         ),
         cardTheme: CardThemeData(
-          color: const Color(0xFF2A2A2A),
-          elevation: 4,
+          color: Colors.white,
+          elevation: 1,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(16),
           ),
@@ -193,7 +193,7 @@ class MyApp extends StatelessWidget {
         ),
         inputDecorationTheme: InputDecorationTheme(
           filled: true,
-          fillColor: const Color(0xFF2A2A2A),
+          fillColor: const Color(0xFFF3F4F6),
           border: OutlineInputBorder(
             borderRadius: BorderRadius.circular(12),
             borderSide: BorderSide.none,
@@ -202,11 +202,11 @@ class MyApp extends StatelessWidget {
             borderRadius: BorderRadius.circular(12),
             borderSide: BorderSide(color: primaryColor, width: 2),
           ),
-          labelStyle: const TextStyle(color: Colors.white70),
-          prefixIconColor: Colors.white70,
+          labelStyle: const TextStyle(color: Color(0xFF6B7280)),
+          prefixIconColor: const Color(0xFF6B7280),
         ),
         bottomSheetTheme: const BottomSheetThemeData(
-          backgroundColor: Color(0xFF1E1E1E),
+          backgroundColor: Colors.white,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
           ),
@@ -215,44 +215,44 @@ class MyApp extends StatelessWidget {
           headlineLarge: TextStyle(
             fontSize: 32,
             fontWeight: FontWeight.bold,
-            color: Colors.white,
+            color: Color(0xFF111827),
           ),
           headlineMedium: TextStyle(
             fontSize: 28,
             fontWeight: FontWeight.w600,
-            color: Colors.white,
+            color: Color(0xFF111827),
           ),
           headlineSmall: TextStyle(
             fontSize: 24,
             fontWeight: FontWeight.w600,
-            color: Colors.white,
+            color: Color(0xFF111827),
           ),
           titleLarge: TextStyle(
             fontSize: 22,
             fontWeight: FontWeight.w600,
-            color: Colors.white,
+            color: Color(0xFF111827),
           ),
           titleMedium: TextStyle(
             fontSize: 18,
             fontWeight: FontWeight.w500,
-            color: Colors.white,
+            color: Color(0xFF111827),
           ),
           titleSmall: TextStyle(
             fontSize: 16,
             fontWeight: FontWeight.w500,
-            color: Colors.white,
+            color: Color(0xFF111827),
           ),
           bodyLarge: TextStyle(
             fontSize: 16,
-            color: Colors.white,
+            color: Color(0xFF111827),
           ),
           bodyMedium: TextStyle(
             fontSize: 14,
-            color: Colors.white,
+            color: Color(0xFF111827),
           ),
           bodySmall: TextStyle(
             fontSize: 12,
-            color: Colors.white70,
+            color: Color(0xFF6B7280),
           ),
         ),
       ),
