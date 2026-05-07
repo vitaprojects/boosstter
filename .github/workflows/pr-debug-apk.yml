@@ -1,0 +1,52 @@
+name: PR Debug APK Check
+
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-debug-apk:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: booster_app
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Flutter pub get
+        run: flutter pub get
+
+      - name: Build debug APK
+        run: flutter build apk --debug
+
+      - name: Generate checksum
+        run: |
+          sha256sum build/app/outputs/flutter-apk/app-debug.apk > build/app/outputs/flutter-apk/app-debug.sha256
+
+      - name: Upload PR artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-debug-apk-${{ github.event.pull_request.number || github.run_number }}
+          path: |
+            booster_app/build/app/outputs/flutter-apk/app-debug.apk
+            booster_app/build/app/outputs/flutter-apk/app-debug.sha256
+          if-no-files-found: error
