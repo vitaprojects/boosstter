@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'booster_logo.dart';
 import 'signup_screen.dart';
+import 'explainer_screen.dart';
 import 'home_screen.dart';
 
 class LoginScreen extends StatefulWidget {
@@ -66,7 +67,16 @@ class _LoginScreenState extends State<LoginScreen> {
     }
 
     Navigator.of(context).pushAndRemoveUntil(
-      MaterialPageRoute(builder: (_) => const HomeScreen()),
+      MaterialPageRoute(
+        builder: (explainerContext) => ExplainerScreen(
+          onProceed: () {
+            Navigator.of(explainerContext).pushAndRemoveUntil(
+              MaterialPageRoute(builder: (_) => const HomeScreen()),
+              (route) => false,
+            );
+          },
+        ),
+      ),
       (route) => false,
     );
   }

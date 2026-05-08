@@ -8,6 +8,7 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'login_screen.dart';
+import 'explainer_screen.dart';
 import 'home_screen.dart';
 
 const _firebaseApiKey = String.fromEnvironment('FIREBASE_API_KEY');
@@ -280,7 +281,13 @@ class AuthGate extends StatelessWidget {
           return const LoginScreen();
         }
 
-        return const HomeScreen();
+        return ExplainerScreen(
+          onProceed: () {
+            Navigator.of(context).pushReplacement(
+              MaterialPageRoute(builder: (_) => const HomeScreen()),
+            );
+          },
+        );
       },
     );
   }
