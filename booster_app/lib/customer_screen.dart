@@ -28,6 +28,8 @@ class _CustomerScreenState extends State<CustomerScreen> {
   LatLng? _pickupLatLng;
   String? _vehicleType;
   String? _plugType;
+  String? _selectedBoostVehicleType;
+  String? _selectedBoostPlugType;
   final List<_NearbyBooster> _nearbyBoosters = <_NearbyBooster>[];
 
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _requestWatchSub;
@@ -156,11 +158,18 @@ class _CustomerScreenState extends State<CustomerScreen> {
     return false;
   }
 
-  Future<void> _openPickupSelector() async {
+  Future<void> _openPickupSelector({
+    required String vehicleType,
+    String? plugType,
+  }) async {
     final selection = await showModalBottomSheet<_PickupSelection>(
       context: context,
       isScrollControlled: true,
-      builder: (context) => const _PickupSelectorSheet(),
+      builder: (context) => _PickupSelectorSheet(
+        initialVehicleType: vehicleType,
+        initialPlugType: plugType,
+        lockVehicleSelection: true,
+      ),
     );
 
     if (selection == null || !mounted) {
@@ -177,6 +186,39 @@ class _CustomerScreenState extends State<CustomerScreen> {
 
     _showSuccessSnackBar('Pickup saved. Searching nearby boosters...');
     await _searchNearbyBoosters();
+  }
+
+  bool get _isBoostSelectionValid {
+    if (_selectedBoostVehicleType == null) {
+      return false;
+    }
+
+    if (_selectedBoostVehicleType == _electricVehicleType &&
+        _selectedBoostPlugType == null) {
+      return false;
+    }
+
+    return true;
+  }
+
+  Future<void> _continueBoostFlow() async {
+    if (_selectedBoostVehicleType == null) {
+      _showErrorSnackBar('Choose Regular or Electric to continue', Icons.ev_station);
+      return;
+    }
+
+    if (_selectedBoostVehicleType == _electricVehicleType &&
+        _selectedBoostPlugType == null) {
+      _showErrorSnackBar('Select your EV plug type to continue', Icons.power);
+      return;
+    }
+
+    await _openPickupSelector(
+      vehicleType: _selectedBoostVehicleType!,
+      plugType: _selectedBoostVehicleType == _electricVehicleType
+          ? _selectedBoostPlugType
+          : null,
+    );
   }
 
   Future<void> _requestBoost(String driverId) async {
@@ -487,7 +529,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Booster'),
+        title: const Text('Battery Boost Assistance'),
         actions: [
           IconButton(
             icon: const Icon(Icons.logout),
@@ -503,203 +545,181 @@ class _CustomerScreenState extends State<CustomerScreen> {
           ),
         ],
       ),
-      body: _isLoading
-          ? const Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  CircularProgressIndicator(),
-                  SizedBox(height: 16),
-                  Text('Getting your location...'),
-                ],
-              ),
-            )
-          : Column(
-              children: [
-                Expanded(
-                  flex: 5,
-                  child: GoogleMap(
-                    initialCameraPosition: CameraPosition(
-                      target: LatLng(
-                        _currentPosition!.latitude,
-                        _currentPosition!.longitude,
-                      ),
-                      zoom: 14,
-                    ),
-                    markers: _buildMarkers(),
-                    onMapCreated: (controller) {
-                      _mapController = controller;
-                    },
-                    myLocationEnabled: _hasLocationPermission,
-                    myLocationButtonEnabled: _hasLocationPermission,
-                  ),
-                ),
-                Expanded(
-                  flex: 4,
-                  child: Container(
-                    padding: const EdgeInsets.fromLTRB(16, 14, 16, 6),
-                    decoration: BoxDecoration(
-                      color: Theme.of(context).scaffoldBackgroundColor,
-                      border: const Border(
-                        top: BorderSide(color: Colors.white10),
-                      ),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        Row(
-                          children: [
-                            Expanded(
-                              child: OutlinedButton.icon(
-                                onPressed: _openPickupSelector,
-                                icon: const Icon(Icons.place),
-                                label: const Text('Set Pickup'),
-                              ),
-                            ),
-                            const SizedBox(width: 10),
-                            Expanded(
-                              child: ElevatedButton.icon(
-                                onPressed: _isSearchingBoosters
-                                    ? null
-                                    : _searchNearbyBoosters,
-                                icon: _isSearchingBoosters
-                                    ? const SizedBox(
-                                        width: 16,
-                                        height: 16,
-                                        child: CircularProgressIndicator(
-                                          strokeWidth: 2,
-                                        ),
-                                      )
-                                    : const Icon(Icons.search),
-                                label: const Text('Search'),
-                              ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 10),
-                        if (_pickupAddress != null)
-                          Container(
-                            padding: const EdgeInsets.all(10),
-                            decoration: BoxDecoration(
-                              color: const Color(0xFF1E1E1E),
-                              borderRadius: BorderRadius.circular(12),
-                              border: Border.all(color: Colors.white10),
-                            ),
-                            child: Row(
-                              children: [
-                                const Icon(
-                                  Icons.pin_drop,
-                                  color: Color(0xFF6366F1),
-                                ),
-                                const SizedBox(width: 8),
-                                Expanded(
-                                  child: Text(
-                                    _pickupAddress!,
-                                    style:
-                                        Theme.of(context).textTheme.bodyMedium,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        if (_vehicleType != null) ...[
-                          const SizedBox(height: 8),
-                          Container(
-                            padding: const EdgeInsets.all(10),
-                            decoration: BoxDecoration(
-                              color: const Color(0xFF1E1E1E),
-                              borderRadius: BorderRadius.circular(12),
-                              border: Border.all(color: Colors.white10),
-                            ),
-                            child: Row(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Icon(
-                                  _vehicleType == _electricVehicleType
-                                      ? Icons.ev_station
-                                      : Icons.directions_car,
-                                  color: const Color(0xFF22D3EE),
-                                ),
-                                const SizedBox(width: 8),
-                                Expanded(
-                                  child: Text(
-                                    _vehicleType == _electricVehicleType
-                                        ? 'Electric vehicle${_plugType == null ? '' : ' • $_plugType'}'
-                                        : 'Regular vehicle',
-                                    style: Theme.of(context).textTheme.bodyMedium,
-                                  ),
-                                ),
-                              ],
-                            ),
+      body: Container(
+        color: const Color(0xFFF3F3F7),
+        child: SafeArea(
+          child: Column(
+            children: [
+              Expanded(
+                child: ListView(
+                  padding: const EdgeInsets.fromLTRB(18, 14, 18, 14),
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(22),
+                        border: Border.all(color: const Color(0xFFE1E2EA)),
+                        boxShadow: const [
+                          BoxShadow(
+                            color: Color(0x11000000),
+                            blurRadius: 10,
+                            offset: Offset(0, 2),
                           ),
                         ],
-                        const SizedBox(height: 10),
-                        if (_activeRequestId != null)
-                          _RequestStatusCard(
-                            status: _activeRequestStatus ?? 'pending',
-                            driverId: _activeDriverId,
-                            onPayNow: _activeRequestStatus == 'awaiting_payment'
-                                ? () => _showPaymentSheet(_activeRequestId!)
-                                : null,
-                          ),
-                        if (_activeRequestId != null) const SizedBox(height: 10),
-                        Text(
-                          'Nearby Boosters',
-                          style: Theme.of(context).textTheme.titleMedium,
-                        ),
-                        const SizedBox(height: 8),
-                        Expanded(
-                          child: _nearbyBoosters.isEmpty
-                              ? Center(
-                                  child: Text(
-                                    _pickupAddress == null
-                                        ? 'Set pickup and search to find boosters'
-                                        : 'No boosters found yet',
-                                    style: Theme.of(context)
-                                        .textTheme
-                                        .bodyMedium
-                                        ?.copyWith(color: Colors.grey[400]),
-                                  ),
-                                )
-                              : ListView.builder(
-                                  itemCount: _nearbyBoosters.length,
-                                  itemBuilder: (context, index) {
-                                    final booster = _nearbyBoosters[index];
-                                    return Card(
-                                      margin: const EdgeInsets.only(bottom: 8),
-                                      child: ListTile(
-                                        leading: const Icon(
-                                          Icons.directions_car,
-                                          color: Color(0xFF6366F1),
-                                        ),
-                                        title: Text(booster.displayName),
-                                        subtitle: Text(
-                                          '${booster.distanceKm.toStringAsFixed(2)} km • ETA ${booster.etaMinutes} min',
-                                        ),
-                                        trailing: ElevatedButton(
-                                          onPressed: _isWaitingForBooster
-                                              ? null
-                                              : () => _requestBoost(booster.userId),
-                                          child: const Text('Send Invite'),
-                                        ),
-                                      ),
-                                    );
-                                  },
+                      ),
+                      child: Column(
+                        children: [
+                          Row(
+                            children: [
+                              Container(
+                                width: 56,
+                                height: 56,
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFFCCEFF8),
+                                  borderRadius: BorderRadius.circular(18),
                                 ),
+                                alignment: Alignment.center,
+                                child: const Text(
+                                  '1',
+                                  style: TextStyle(
+                                    color: Color(0xFF0E90AC),
+                                    fontWeight: FontWeight.w700,
+                                    fontSize: 34,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 14),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      'Choose Your Battery Boost Type',
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .headlineSmall
+                                          ?.copyWith(fontWeight: FontWeight.w700),
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      'Pick the exact kind of roadside help you need before we search.',
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .bodyLarge
+                                          ?.copyWith(color: const Color(0xFF666A7A)),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 14),
+                          const _StepProgressRow(activeStep: 1, totalSteps: 4),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 18),
+                    Text(
+                      'Vehicle Type',
+                      style: Theme.of(context)
+                          .textTheme
+                          .headlineSmall
+                          ?.copyWith(fontWeight: FontWeight.w700),
+                    ),
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: _BoostTypeCard(
+                            title: 'Regular Car Boost',
+                            subtitle: 'Best for standard gas or hybrid vehicles',
+                            icon: Icons.directions_car,
+                            selected: _selectedBoostVehicleType == _regularVehicleType,
+                            selectedColor: const Color(0xFF6366F1),
+                            onTap: () {
+                              setState(() {
+                                _selectedBoostVehicleType = _regularVehicleType;
+                                _selectedBoostPlugType = null;
+                              });
+                            },
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: _BoostTypeCard(
+                            title: 'Electric Car Boost',
+                            subtitle: 'Best for EV roadside battery support',
+                            icon: Icons.ev_station,
+                            selected: _selectedBoostVehicleType == _electricVehicleType,
+                            selectedColor: const Color(0xFF22D3EE),
+                            onTap: () {
+                              setState(() {
+                                _selectedBoostVehicleType = _electricVehicleType;
+                                _selectedBoostPlugType ??= _plugTypes.first;
+                              });
+                            },
+                          ),
                         ),
                       ],
                     ),
+                    if (_selectedBoostVehicleType == _electricVehicleType) ...[
+                      const SizedBox(height: 16),
+                      Text(
+                        'EV Plug Type',
+                        style: Theme.of(context)
+                            .textTheme
+                            .titleLarge
+                            ?.copyWith(fontWeight: FontWeight.w700),
+                      ),
+                      const SizedBox(height: 10),
+                      SizedBox(
+                        height: 220,
+                        child: ListView.separated(
+                          scrollDirection: Axis.horizontal,
+                          itemCount: _plugTypes.length,
+                          separatorBuilder: (_, _) => const SizedBox(width: 10),
+                          itemBuilder: (context, index) {
+                            final plugType = _plugTypes[index];
+                            return _PlugTypeCard(
+                              plugType: plugType,
+                              selected: _selectedBoostPlugType == plugType,
+                              onTap: () => setState(() {
+                                _selectedBoostPlugType = plugType;
+                              }),
+                            );
+                          },
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(18, 6, 18, 12),
+                child: SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: _isBoostSelectionValid ? _continueBoostFlow : null,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF5500FF),
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(22),
+                      ),
+                      padding: const EdgeInsets.symmetric(vertical: 18),
+                    ),
+                    child: const Text(
+                      'Continue',
+                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+                    ),
                   ),
                 ),
-              ],
-            ),
-      floatingActionButton: _isLoading
-          ? null
-          : FloatingActionButton(
-              onPressed: _recenterMap,
-              tooltip: 'Recenter Map',
-              child: const Icon(Icons.my_location),
-            ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 
@@ -1106,6 +1126,118 @@ class _NearbyBooster {
   final int etaMinutes;
 }
 
+class _StepProgressRow extends StatelessWidget {
+  const _StepProgressRow({
+    required this.activeStep,
+    required this.totalSteps,
+  });
+
+  final int activeStep;
+  final int totalSteps;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: List<Widget>.generate(totalSteps, (index) {
+        final isActive = index < activeStep;
+        return Expanded(
+          child: Container(
+            height: 10,
+            margin: EdgeInsets.only(right: index == totalSteps - 1 ? 0 : 10),
+            decoration: BoxDecoration(
+              color: isActive ? const Color(0xFF2BC8E8) : const Color(0xFFE3E3EB),
+              borderRadius: BorderRadius.circular(8),
+            ),
+          ),
+        );
+      }),
+    );
+  }
+}
+
+class _BoostTypeCard extends StatelessWidget {
+  const _BoostTypeCard({
+    required this.title,
+    required this.subtitle,
+    required this.icon,
+    required this.selected,
+    required this.selectedColor,
+    required this.onTap,
+  });
+
+  final String title;
+  final String subtitle;
+  final IconData icon;
+  final bool selected;
+  final Color selectedColor;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(24),
+      child: Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: selected ? selectedColor.withValues(alpha: 0.14) : Colors.white,
+          borderRadius: BorderRadius.circular(24),
+          border: Border.all(
+            color: selected ? selectedColor.withValues(alpha: 0.9) : const Color(0xFFD6D7E0),
+            width: selected ? 2 : 1.3,
+          ),
+          boxShadow: selected
+              ? [
+                  BoxShadow(
+                    color: selectedColor.withValues(alpha: 0.16),
+                    blurRadius: 22,
+                    spreadRadius: 3,
+                  ),
+                ]
+              : const [],
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  width: 60,
+                  height: 60,
+                  decoration: BoxDecoration(
+                    color: selectedColor.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(18),
+                  ),
+                  child: Icon(icon, color: const Color(0xFF6B7280), size: 33),
+                ),
+                const Spacer(),
+                if (selected)
+                  Icon(Icons.check_circle, color: selectedColor, size: 34),
+              ],
+            ),
+            const SizedBox(height: 16),
+            Text(
+              title,
+              style: Theme.of(context)
+                  .textTheme
+                  .titleLarge
+                  ?.copyWith(fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              subtitle,
+              style: Theme.of(context)
+                  .textTheme
+                  .bodyLarge
+                  ?.copyWith(color: const Color(0xFF666A7A)),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _PickupSelection {
   const _PickupSelection({
     required this.address,
@@ -1121,7 +1253,15 @@ class _PickupSelection {
 }
 
 class _PickupSelectorSheet extends StatefulWidget {
-  const _PickupSelectorSheet();
+  const _PickupSelectorSheet({
+    required this.initialVehicleType,
+    this.initialPlugType,
+    this.lockVehicleSelection = false,
+  });
+
+  final String initialVehicleType;
+  final String? initialPlugType;
+  final bool lockVehicleSelection;
 
   @override
   State<_PickupSelectorSheet> createState() => _PickupSelectorSheetState();
@@ -1131,8 +1271,17 @@ class _PickupSelectorSheetState extends State<_PickupSelectorSheet> {
   final TextEditingController _addressController = TextEditingController();
   bool _isSaving = false;
   String? _error;
-  String _selectedVehicleType = _regularVehicleType;
-  String? _selectedPlugType = _plugTypes.first;
+  late String _selectedVehicleType;
+  String? _selectedPlugType;
+
+  @override
+  void initState() {
+    super.initState();
+    _selectedVehicleType = widget.initialVehicleType;
+    _selectedPlugType = widget.initialVehicleType == _electricVehicleType
+        ? (widget.initialPlugType ?? _plugTypes.first)
+        : null;
+  }
 
   @override
   void dispose() {
@@ -1292,27 +1441,28 @@ class _PickupSelectorSheetState extends State<_PickupSelectorSheet> {
             const SizedBox(height: 12),
             Text('Set Pickup Location', style: Theme.of(context).textTheme.titleLarge),
             const SizedBox(height: 14),
-            _VehicleTypeSelector(
-              selectedVehicleType: _selectedVehicleType,
-              selectedPlugType: _selectedPlugType,
-              onVehicleTypeChanged: (vehicleType) {
-                setState(() {
-                  _selectedVehicleType = vehicleType;
-                  if (vehicleType == _regularVehicleType) {
-                    _selectedPlugType = null;
-                  } else {
-                    _selectedPlugType ??= _plugTypes.first;
-                  }
-                  _error = null;
-                });
-              },
-              onPlugTypeChanged: (plugType) {
-                setState(() {
-                  _selectedPlugType = plugType;
-                  _error = null;
-                });
-              },
-            ),
+            if (!widget.lockVehicleSelection)
+              _VehicleTypeSelector(
+                selectedVehicleType: _selectedVehicleType,
+                selectedPlugType: _selectedPlugType,
+                onVehicleTypeChanged: (vehicleType) {
+                  setState(() {
+                    _selectedVehicleType = vehicleType;
+                    if (vehicleType == _regularVehicleType) {
+                      _selectedPlugType = null;
+                    } else {
+                      _selectedPlugType ??= _plugTypes.first;
+                    }
+                    _error = null;
+                  });
+                },
+                onPlugTypeChanged: (plugType) {
+                  setState(() {
+                    _selectedPlugType = plugType;
+                    _error = null;
+                  });
+                },
+              ),
             const SizedBox(height: 12),
             const TabBar(
               tabs: [
