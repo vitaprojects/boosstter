@@ -2453,6 +2453,8 @@ class _PickupSelectorSheetState extends State<_PickupSelectorSheet> {
   final TextEditingController _addressController = TextEditingController();
   bool _isSaving = false;
   String? _error;
+  bool _isLoadingCurrentLocationPreview = false;
+  String? _currentLocationPreviewAddress;
   late String _selectedVehicleType;
   String? _selectedPlugType;
 
@@ -2463,6 +2465,70 @@ class _PickupSelectorSheetState extends State<_PickupSelectorSheet> {
     _selectedPlugType = widget.initialVehicleType == _electricVehicleType
         ? (widget.initialPlugType ?? _plugTypes.first)
         : null;
+    _loadCurrentLocationPreview();
+  }
+
+  Future<void> _loadCurrentLocationPreview() async {
+    setState(() {
+      _isLoadingCurrentLocationPreview = true;
+    });
+
+    try {
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
+
+      if (permission == LocationPermission.denied ||
+          permission == LocationPermission.deniedForever) {
+        if (!mounted) return;
+        setState(() {
+          _isLoadingCurrentLocationPreview = false;
+          _currentLocationPreviewAddress =
+              'Location permission is off. Enable it to auto-detect your address.';
+        });
+        return;
+      }
+
+      final position = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+      );
+
+      var displayAddress =
+          'Current location (${position.latitude.toStringAsFixed(5)}, ${position.longitude.toStringAsFixed(5)})';
+      try {
+        final places = await placemarkFromCoordinates(
+          position.latitude,
+          position.longitude,
+        );
+        if (places.isNotEmpty) {
+          final p = places.first;
+          final parts = <String>[
+            if ((p.street ?? '').isNotEmpty) p.street!,
+            if ((p.locality ?? '').isNotEmpty) p.locality!,
+            if ((p.administrativeArea ?? '').isNotEmpty) p.administrativeArea!,
+          ];
+          if (parts.isNotEmpty) {
+            displayAddress = parts.join(', ');
+          }
+        }
+      } catch (_) {
+        // Keep coordinate fallback.
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _isLoadingCurrentLocationPreview = false;
+        _currentLocationPreviewAddress = displayAddress;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _isLoadingCurrentLocationPreview = false;
+        _currentLocationPreviewAddress =
+            'Could not detect your address yet. You can still tap Save Current Location.';
+      });
+    }
   }
 
   @override
@@ -2686,12 +2752,32 @@ class _PickupSelectorSheetState extends State<_PickupSelectorSheet> {
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
                       const SizedBox(height: 6),
-                      Text(
-                        'Use your current GPS location as pickup address.',
-                        style: Theme.of(context)
-                            .textTheme
-                            .bodyMedium
-                            ?.copyWith(color: Colors.grey[400]),
+                      Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFF7F7FA),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: const Color(0xFFD6D7E0)),
+                        ),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Icon(Icons.my_location, color: Color(0xFF2BC8E8)),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Text(
+                                _isLoadingCurrentLocationPreview
+                                    ? 'Detecting your current address...'
+                                    : (_currentLocationPreviewAddress ??
+                                        'Use your current GPS location as pickup address.'),
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .bodyMedium
+                                    ?.copyWith(color: const Color(0xFF6D7182)),
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
                       const SizedBox(height: 16),
                       ElevatedButton.icon(
