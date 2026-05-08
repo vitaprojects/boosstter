@@ -6,6 +6,7 @@ import 'login_screen.dart';
 import 'customer_screen.dart';
 import 'driver_screen.dart';
 import 'explainer_screen.dart';
+import 'project_flow_checkpoint.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -452,6 +453,12 @@ class _ProfileTab extends StatelessWidget {
       accent: const Color(0xFFFFD60A),
       actionLabel: 'Sign out',
       onAction: onLogout,
+      secondaryActionLabel: 'Flow Checkpoint',
+      onSecondaryAction: () {
+        Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => const FlowCheckpointScreen()),
+        );
+      },
     );
   }
 }
@@ -464,6 +471,8 @@ class _InfoTab extends StatelessWidget {
     required this.accent,
     this.actionLabel,
     this.onAction,
+    this.secondaryActionLabel,
+    this.onSecondaryAction,
   });
 
   final String title;
@@ -472,6 +481,8 @@ class _InfoTab extends StatelessWidget {
   final Color accent;
   final String? actionLabel;
   final VoidCallback? onAction;
+  final String? secondaryActionLabel;
+  final VoidCallback? onSecondaryAction;
 
   @override
   Widget build(BuildContext context) {
@@ -518,10 +529,135 @@ class _InfoTab extends StatelessWidget {
                     child: Text(actionLabel!),
                   ),
                 ],
+                if (secondaryActionLabel != null && onSecondaryAction != null) ...[
+                  const SizedBox(height: 10),
+                  OutlinedButton(
+                    onPressed: onSecondaryAction,
+                    child: Text(secondaryActionLabel!),
+                  ),
+                ],
               ],
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+class FlowCheckpointScreen extends StatelessWidget {
+  const FlowCheckpointScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Flow Checkpoint')),
+      body: SafeArea(
+        child: ListView(
+          padding: const EdgeInsets.all(16),
+          children: [
+            _CheckpointCard(
+              title: 'Checkpoint Version',
+              child: Text(
+                ProjectFlowCheckpoint.version,
+                style: Theme.of(context)
+                    .textTheme
+                    .titleLarge
+                    ?.copyWith(fontWeight: FontWeight.w700),
+              ),
+            ),
+            _CheckpointCard(
+              title: 'Completed Flows',
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: ProjectFlowCheckpoint.completedFlows
+                    .map((item) => Padding(
+                          padding: const EdgeInsets.only(bottom: 8),
+                          child: Text('- $item'),
+                        ))
+                    .toList(),
+              ),
+            ),
+            _CheckpointCard(
+              title: 'EV Plug Types',
+              child: Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: ProjectFlowCheckpoint.evPlugTypes
+                    .map((item) => Chip(label: Text(item)))
+                    .toList(),
+              ),
+            ),
+            _CheckpointCard(
+              title: 'Tow Reasons',
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: ProjectFlowCheckpoint.towReasons
+                    .map((item) => Padding(
+                          padding: const EdgeInsets.only(bottom: 8),
+                          child: Text('- $item'),
+                        ))
+                    .toList(),
+              ),
+            ),
+            _CheckpointCard(
+              title: 'Pricing Rule',
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(ProjectFlowCheckpoint.pricingRule),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Tow service: \$${(ProjectFlowCheckpoint.towServiceCadCents / 100).toStringAsFixed(2)}',
+                  ),
+                  Text(
+                    'First-use yearly subscription: \$${(ProjectFlowCheckpoint.firstUseYearlySubscriptionCadCents / 100).toStringAsFixed(2)}',
+                  ),
+                  Text(
+                    'Canadian tax rate: ${(ProjectFlowCheckpoint.canadianTaxRate * 100).toStringAsFixed(0)}%',
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _CheckpointCard extends StatelessWidget {
+  const _CheckpointCard({
+    required this.title,
+    required this.child,
+  });
+
+  final String title;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFE2E4ED)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            title,
+            style: Theme.of(context)
+                .textTheme
+                .titleMedium
+                ?.copyWith(fontWeight: FontWeight.w700),
+          ),
+          const SizedBox(height: 10),
+          child,
+        ],
       ),
     );
   }
