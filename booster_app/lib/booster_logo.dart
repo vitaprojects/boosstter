@@ -14,6 +14,7 @@ class BoosterLogo extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final onSurface = Theme.of(context).colorScheme.onSurface;
     final mark = SizedBox(
       width: size,
       height: size,
@@ -27,16 +28,34 @@ class BoosterLogo extends StatelessWidget {
       return mark;
     }
 
-    final lockup = Image.asset(
-      'assets/branding/brand_lockup.png',
-      width: compact ? size * 2.0 : size * 3.2,
-      fit: BoxFit.contain,
+    final tagline = Text(
+      'GET BOOSTED',
+      style: TextStyle(
+        fontSize: compact ? size * 0.2 : size * 0.23,
+        fontWeight: FontWeight.w800,
+        letterSpacing: 1.2,
+        color: onSurface.withValues(alpha: 0.9),
+      ),
     );
 
     if (compact) {
-      return lockup;
+      return Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          mark,
+          SizedBox(height: size * 0.12),
+          tagline,
+        ],
+      );
     }
 
-    return lockup;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        mark,
+        SizedBox(width: size * 0.18),
+        tagline,
+      ],
+    );
   }
 }
