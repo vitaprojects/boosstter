@@ -15,9 +15,13 @@ class BoosterLogo extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final onSurface = Theme.of(context).colorScheme.onSurface;
-    final mark = SizedBox(
+    final mark = Container(
       width: size,
       height: size,
+      decoration: const BoxDecoration(
+        shape: BoxShape.circle,
+      ),
+      clipBehavior: Clip.antiAlias,
       child: Image.asset(
         'assets/branding/booster_mark.png',
         fit: BoxFit.cover,
