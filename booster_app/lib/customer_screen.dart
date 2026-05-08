@@ -41,6 +41,8 @@ class _CustomerScreenState extends State<CustomerScreen> {
   int _towStep = 1;
   int _towLocationTabIndex = 0;
   final TextEditingController _towManualAddressController = TextEditingController();
+  String? _selectedTowReason;
+  final TextEditingController _towNotesController = TextEditingController();
   final List<_NearbyBooster> _nearbyBoosters = <_NearbyBooster>[];
 
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _requestWatchSub;
@@ -70,6 +72,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
     _requestWatchSub?.cancel();
     _towManualVehicleController.dispose();
     _towManualAddressController.dispose();
+    _towNotesController.dispose();
     super.dispose();
   }
 
@@ -365,6 +368,120 @@ class _CustomerScreenState extends State<CustomerScreen> {
       await _searchNearbyBoosters();
     } catch (_) {
       _showErrorSnackBar('Could not resolve address', Icons.cloud_off);
+    }
+  }
+
+  Future<_TowPricing> _computeTowPricing() async {
+    final user = FirebaseAuth.instance.currentUser;
+    var applyFirstUseYearlySubscription = false;
+
+    if (user != null) {
+      final userDoc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .get();
+      final data = userDoc.data() ?? <String, dynamic>{};
+      final hasUsedServiceBefore = data['hasUsedServiceBefore'] == true;
+      final yearlySubscriptionPaid = data['yearlySubscriptionPaid'] == true;
+      applyFirstUseYearlySubscription = !hasUsedServiceBefore && !yearlySubscriptionPaid;
+    }
+
+    final isCanadianAddress = (_pickupAddress ?? '').toLowerCase().contains('canada') ||
+        (_pickupAddress ?? '').toLowerCase().contains('ontario');
+    final taxCents = isCanadianAddress
+        ? (_towBaseCadCents * _canadianTaxRate).round()
+        : 0;
+    final subscriptionCents =
+        applyFirstUseYearlySubscription ? _firstUseYearlySubscriptionCadCents : 0;
+
+    return _TowPricing(
+      serviceCents: _towBaseCadCents,
+      taxCents: taxCents,
+      subscriptionCents: subscriptionCents,
+      totalCents: _towBaseCadCents + taxCents + subscriptionCents,
+    );
+  }
+
+  Future<void> _confirmTowPaymentAndPlaceRequest() async {
+    if (_selectedTowReason == null || _selectedTowReason!.isEmpty) {
+      _showErrorSnackBar('Select a tow reason before requesting', Icons.list_alt);
+      return;
+    }
+
+    if (_pickupLatLng == null || _pickupAddress == null) {
+      _showErrorSnackBar('Please save your pickup location first', Icons.place);
+      return;
+    }
+
+    if (_nearbyBoosters.isEmpty) {
+      _showErrorSnackBar('No tow providers found nearby yet', Icons.search_off);
+      return;
+    }
+
+    final pricing = await _computeTowPricing();
+    if (!mounted) return;
+
+    final proceed = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => _TowPaymentConfirmScreen(pricing: pricing),
+      ),
+    );
+
+    if (proceed != true || !mounted) {
+      return;
+    }
+
+    final nearestProvider = _nearbyBoosters.first;
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      return;
+    }
+
+    try {
+      final requestRef = await FirebaseFirestore.instance.collection('requests').add({
+        'customerId': user.uid,
+        'driverId': nearestProvider.userId,
+        'serviceType': _serviceTypeTow,
+        'status': 'pending',
+        'pickupAddress': _pickupAddress,
+        'pickupLatitude': _pickupLatLng!.latitude,
+        'pickupLongitude': _pickupLatLng!.longitude,
+        'vehicleType': _vehicleType,
+        'towVehicleType': _vehicleType,
+        'towReason': _selectedTowReason,
+        'towNotes': _towNotesController.text.trim().isEmpty
+            ? null
+            : _towNotesController.text.trim(),
+        'serviceChargeCents': pricing.serviceCents,
+        'subscriptionChargeCents': pricing.subscriptionCents,
+        'taxCents': pricing.taxCents,
+        'totalChargeCents': pricing.totalCents,
+        'currency': 'cad',
+        'timestamp': FieldValue.serverTimestamp(),
+      });
+
+      await FirebaseFirestore.instance.collection('users').doc(user.uid).set({
+        'hasUsedServiceBefore': true,
+        'isSubscribed': pricing.subscriptionCents > 0 ? true : FieldValue.delete(),
+        'yearlySubscriptionPaid': pricing.subscriptionCents > 0 ? true : FieldValue.delete(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+
+      if (!mounted) return;
+      setState(() {
+        _activeRequestId = requestRef.id;
+        _activeRequestStatus = 'pending';
+        _activeDriverId = nearestProvider.userId;
+        _towStep = 4;
+        _flowStep = 4;
+      });
+
+      _showSuccessSnackBar(
+        'Tow request sent to nearest provider. Waiting for acceptance...',
+      );
+    } catch (_) {
+      if (!mounted) return;
+      _showErrorSnackBar('Could not place tow request. Please try again.', Icons.cloud_off);
     }
   }
 
@@ -1185,7 +1302,13 @@ class _CustomerScreenState extends State<CustomerScreen> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              _towStep == 1 ? 'Choose Tow Type' : 'Set Your Location',
+                              _towStep == 1
+                                ? 'Choose Tow Type'
+                                : _towStep == 2
+                                  ? 'Set Your Location'
+                                  : _towStep == 3
+                                    ? 'Request Tow'
+                                    : 'Tow Request Submitted',
                               style: Theme.of(context)
                                   .textTheme
                                   .headlineSmall
@@ -1195,7 +1318,11 @@ class _CustomerScreenState extends State<CustomerScreen> {
                             Text(
                               _towStep == 1
                                   ? 'Pick the tow service that matches your vehicle before we search.'
-                                  : 'Save your current location or enter a different address.',
+                                : _towStep == 2
+                                  ? 'Save your current location or enter a different address.'
+                                  : _towStep == 3
+                                    ? 'Review your tow request and start finding nearby available providers.'
+                                    : 'Waiting for provider acceptance and dispatch updates.',
                               style: Theme.of(context)
                                   .textTheme
                                   .bodyLarge
@@ -1434,50 +1561,145 @@ class _CustomerScreenState extends State<CustomerScreen> {
               ),
               if (_pickupAddress != null) ...[
                 const SizedBox(height: 14),
-                Text(
-                  'Searching area for available service providers...',
-                  style: Theme.of(context)
-                      .textTheme
-                      .bodyLarge
-                      ?.copyWith(color: const Color(0xFF6D7182)),
+                Container(
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: const Color(0xFFD6D7E0)),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Current Selection',
+                        style: Theme.of(context)
+                            .textTheme
+                            .titleLarge
+                            ?.copyWith(fontWeight: FontWeight.w700),
+                      ),
+                      const SizedBox(height: 10),
+                      Row(
+                        children: [
+                          const Icon(Icons.place, color: Color(0xFF6366F1)),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              _pickupAddress!,
+                              style: Theme.of(context).textTheme.bodyLarge,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      Row(
+                        children: [
+                          const Icon(Icons.directions_car, color: Color(0xFF6366F1)),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              _vehicleType ?? _resolvedTowVehicle ?? 'Tow vehicle',
+                              style: Theme.of(context).textTheme.bodyLarge,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
                 ),
-              ],
-              if (_isSearchingBoosters)
-                const Padding(
-                  padding: EdgeInsets.only(top: 8),
-                  child: LinearProgressIndicator(),
-                ),
-              if (_nearbyBoosters.isNotEmpty) ...[
-                const SizedBox(height: 10),
-                ..._nearbyBoosters.map((booster) {
-                  return Container(
-                    margin: const EdgeInsets.only(bottom: 8),
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(14),
-                      border: Border.all(color: const Color(0xFFE2E4ED)),
-                    ),
-                    child: Row(
-                      children: [
-                        const Icon(Icons.local_shipping, color: Color(0xFF0EA5E9)),
-                        const SizedBox(width: 10),
-                        Expanded(
+                const SizedBox(height: 12),
+                Container(
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: const Color(0xFFD6D7E0)),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Ready to Request?',
+                        style: Theme.of(context)
+                            .textTheme
+                            .headlineSmall
+                            ?.copyWith(fontWeight: FontWeight.w700),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        'We will search for tow providers currently available near your saved location.',
+                        style: Theme.of(context)
+                            .textTheme
+                            .bodyLarge
+                            ?.copyWith(color: const Color(0xFF6D7182)),
+                      ),
+                      const SizedBox(height: 12),
+                      DropdownButtonFormField<String>(
+                        value: _selectedTowReason,
+                        items: _towReasons
+                            .map((reason) => DropdownMenuItem<String>(
+                                  value: reason,
+                                  child: Text(reason),
+                                ))
+                            .toList(),
+                        onChanged: (value) {
+                          setState(() => _selectedTowReason = value);
+                        },
+                        decoration: const InputDecoration(
+                          hintText: 'Reason for tow',
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      TextField(
+                        controller: _towNotesController,
+                        minLines: 2,
+                        maxLines: 3,
+                        decoration: const InputDecoration(
+                          hintText: 'Extra notes (optional)',
+                          prefixIcon: Icon(Icons.sticky_note_2_outlined),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton(
+                          onPressed: _confirmTowPaymentAndPlaceRequest,
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF5500FF),
+                            foregroundColor: Colors.white,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(18),
+                            ),
+                            padding: const EdgeInsets.symmetric(vertical: 16),
+                          ),
                           child: Text(
-                            '${booster.displayName} • ${booster.distanceKm.toStringAsFixed(1)} km • ETA ${booster.etaMinutes} min',
-                            style: Theme.of(context).textTheme.bodyMedium,
+                            'Request Tow • Pay \$${_estimateTowPrice(_vehicleType ?? _resolvedTowVehicle ?? _towVehicleOptions.first)}',
+                            style: const TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.w700,
+                            ),
                           ),
                         ),
-                        ElevatedButton(
-                          onPressed: _isWaitingForBooster
-                              ? null
-                              : () => _requestBoost(booster.userId),
-                          child: const Text('Request'),
-                        ),
-                      ],
-                    ),
-                  );
-                }),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 10),
+                if (_isSearchingBoosters)
+                  const Padding(
+                    padding: EdgeInsets.only(top: 8),
+                    child: LinearProgressIndicator(),
+                  )
+                else
+                  Text(
+                    _nearbyBoosters.isEmpty
+                        ? 'No nearby tow providers found yet. Update location and try again.'
+                        : '${_nearbyBoosters.length} nearby tow providers found. Nearest ETA ${_nearbyBoosters.first.etaMinutes} min.',
+                    style: Theme.of(context)
+                        .textTheme
+                        .bodyLarge
+                        ?.copyWith(color: const Color(0xFF6D7182)),
+                  ),
               ],
               if (_activeRequestId != null) ...[
                 const SizedBox(height: 12),
@@ -1668,6 +1890,170 @@ class _RequestStatusCard extends StatelessWidget {
               ),
             ),
           ],
+        ],
+      ),
+    );
+  }
+}
+
+class _TowPricing {
+  const _TowPricing({
+    required this.serviceCents,
+    required this.taxCents,
+    required this.subscriptionCents,
+    required this.totalCents,
+  });
+
+  final int serviceCents;
+  final int taxCents;
+  final int subscriptionCents;
+  final int totalCents;
+}
+
+class _TowPaymentConfirmScreen extends StatelessWidget {
+  const _TowPaymentConfirmScreen({required this.pricing});
+
+  final _TowPricing pricing;
+
+  String _toCad(int cents) => (cents / 100).toStringAsFixed(2);
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Confirm Payment'),
+      ),
+      body: Container(
+        color: const Color(0xFFF3F3F7),
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(18),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(color: const Color(0xFFE1E2EA)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Service Payment',
+                    style: Theme.of(context)
+                        .textTheme
+                        .headlineSmall
+                        ?.copyWith(fontWeight: FontWeight.w700),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Review your service charge below before confirming payment.',
+                    style: Theme.of(context)
+                        .textTheme
+                        .bodyLarge
+                        ?.copyWith(color: const Color(0xFF6D7182)),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(18),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(color: const Color(0xFFE1E2EA)),
+              ),
+              child: Column(
+                children: [
+                  _PaymentLine(label: 'Tow service', value: '\$${_toCad(pricing.serviceCents)}'),
+                  if (pricing.subscriptionCents > 0)
+                    _PaymentLine(
+                      label: 'Yearly subscription (first-time user)',
+                      value: '\$${_toCad(pricing.subscriptionCents)}',
+                    ),
+                  _PaymentLine(label: 'Tax', value: '\$${_toCad(pricing.taxCents)}'),
+                  const Divider(height: 24),
+                  _PaymentLine(
+                    label: 'Service Total',
+                    value: '\$${_toCad(pricing.totalCents)}',
+                    bold: true,
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 18),
+            ElevatedButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF5500FF),
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(18),
+                ),
+                padding: const EdgeInsets.symmetric(vertical: 16),
+              ),
+              child: const Text(
+                'Continue to Payment',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+              ),
+            ),
+            const SizedBox(height: 12),
+            OutlinedButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: const Color(0xFF5500FF),
+                side: const BorderSide(color: Colors.black54),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(18),
+                ),
+                padding: const EdgeInsets.symmetric(vertical: 16),
+              ),
+              child: const Text(
+                'Cancel',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _PaymentLine extends StatelessWidget {
+  const _PaymentLine({
+    required this.label,
+    required this.value,
+    this.bold = false,
+  });
+
+  final String label;
+  final String value;
+  final bool bold;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(
+            label,
+            style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                  color: bold ? const Color(0xFF1F2233) : const Color(0xFF6D7182),
+                  fontWeight: bold ? FontWeight.w700 : FontWeight.w500,
+                ),
+          ),
+          Text(
+            value,
+            style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                  color: const Color(0xFF1F2233),
+                  fontWeight: bold ? FontWeight.w700 : FontWeight.w600,
+                ),
+          ),
         ],
       ),
     );
@@ -2339,6 +2725,9 @@ class _PickupSelectorSheetState extends State<_PickupSelectorSheet> {
 
 const String _serviceTypeBoost = 'boost';
 const String _serviceTypeTow = 'tow';
+const int _towBaseCadCents = 2000;
+const int _firstUseYearlySubscriptionCadCents = 900;
+const double _canadianTaxRate = 0.13;
 
 const String _regularVehicleType = 'regular';
 const String _electricVehicleType = 'electric';
@@ -2348,6 +2737,16 @@ const List<String> _towVehicleOptions = <String>[
   'Pickup / Van Tow',
   'Motorcycle Tow',
   'Light Truck Tow',
+];
+
+const List<String> _towReasons = <String>[
+  'Mechanical breakdown',
+  'Flat tire',
+  'Accident',
+  'Out of fuel',
+  'Vehicle won\'t start',
+  'Vehicle stuck',
+  'Other',
 ];
 const List<String> _plugTypes = <String>[
   'J1772 Type 1',
