@@ -25,12 +25,22 @@ class _CustomerScreenState extends State<CustomerScreen> {
   int _flowStep = 1;
   GoogleMapController? _mapController;
 
+  String _serviceType = _serviceTypeBoost;
+
   String? _pickupAddress;
   LatLng? _pickupLatLng;
   String? _vehicleType;
   String? _plugType;
   String? _selectedBoostVehicleType;
   String? _selectedBoostPlugType;
+  String? _selectedTowVehicle;
+  bool _showTowManualVehicle = false;
+  final TextEditingController _towManualVehicleController = TextEditingController();
+  String? _towDetectedLocationAddress;
+  LatLng? _towDetectedLocationLatLng;
+  int _towStep = 1;
+  int _towLocationTabIndex = 0;
+  final TextEditingController _towManualAddressController = TextEditingController();
   final List<_NearbyBooster> _nearbyBoosters = <_NearbyBooster>[];
 
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _requestWatchSub;
@@ -50,6 +60,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
   @override
   void initState() {
     super.initState();
+    _loadPreferredServiceType();
     _getCurrentLocation();
     _watchLatestRequest();
   }
@@ -57,7 +68,30 @@ class _CustomerScreenState extends State<CustomerScreen> {
   @override
   void dispose() {
     _requestWatchSub?.cancel();
+    _towManualVehicleController.dispose();
+    _towManualAddressController.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadPreferredServiceType() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      return;
+    }
+
+    try {
+      final userDoc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .get();
+      final preferred = userDoc.data()?['preferredServiceType']?.toString();
+      if (!mounted) return;
+      setState(() {
+        _serviceType = preferred == _serviceTypeTow ? _serviceTypeTow : _serviceTypeBoost;
+      });
+    } catch (_) {
+      // Default to boost flow when profile service preference cannot be read.
+    }
   }
 
   Future<void> _getCurrentLocation() async {
@@ -96,6 +130,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
         _currentPosition = position;
         _isLoading = false;
       });
+      await _updateTowDetectedLocation(position.latitude, position.longitude);
 
       // Move camera to current position
       if (_mapController != null && _currentPosition != null) {
@@ -126,7 +161,36 @@ class _CustomerScreenState extends State<CustomerScreen> {
         _isLoading = false;
         _updateMarkers();
       });
+      await _updateTowDetectedLocation(37.7749, -122.4194);
     }
+  }
+
+  Future<void> _updateTowDetectedLocation(double latitude, double longitude) async {
+    var address =
+        'Current location (${latitude.toStringAsFixed(5)}, ${longitude.toStringAsFixed(5)})';
+
+    try {
+      final places = await placemarkFromCoordinates(latitude, longitude);
+      if (places.isNotEmpty) {
+        final p = places.first;
+        final parts = <String>[
+          if ((p.street ?? '').isNotEmpty) p.street!,
+          if ((p.locality ?? '').isNotEmpty) p.locality!,
+          if ((p.administrativeArea ?? '').isNotEmpty) p.administrativeArea!,
+        ];
+        if (parts.isNotEmpty) {
+          address = parts.join(', ');
+        }
+      }
+    } catch (_) {
+      // Keep coordinate fallback.
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _towDetectedLocationAddress = address;
+      _towDetectedLocationLatLng = LatLng(latitude, longitude);
+    });
   }
 
   Future<bool> _ensureSubscribed() async {
@@ -224,6 +288,86 @@ class _CustomerScreenState extends State<CustomerScreen> {
     );
   }
 
+  String? get _resolvedTowVehicle {
+    final manual = _towManualVehicleController.text.trim();
+    if (_showTowManualVehicle && manual.isNotEmpty) {
+      return manual;
+    }
+    return _selectedTowVehicle;
+  }
+
+  Future<void> _continueTowStepOne() async {
+    final selectedVehicle = _resolvedTowVehicle;
+    if (selectedVehicle == null || selectedVehicle.isEmpty) {
+      _showErrorSnackBar('Select a vehicle type or enter it manually', Icons.directions_car);
+      return;
+    }
+
+    setState(() {
+      _selectedTowVehicle = selectedVehicle;
+      _towStep = 2;
+      _flowStep = 2;
+    });
+
+    if (_currentPosition != null) {
+      await _updateTowDetectedLocation(
+        _currentPosition!.latitude,
+        _currentPosition!.longitude,
+      );
+    }
+  }
+
+  Future<void> _saveTowCurrentLocation() async {
+    if (_towDetectedLocationLatLng == null || _towDetectedLocationAddress == null) {
+      _showErrorSnackBar('Current location is not ready yet. Try again in a moment.', Icons.my_location);
+      return;
+    }
+
+    setState(() {
+      _pickupAddress = _towDetectedLocationAddress;
+      _pickupLatLng = _towDetectedLocationLatLng;
+      _vehicleType = _resolvedTowVehicle;
+      _plugType = null;
+      _towStep = 3;
+      _flowStep = 3;
+    });
+
+    _showSuccessSnackBar('Current location saved. Searching nearby tow providers...');
+    await _searchNearbyBoosters();
+  }
+
+  Future<void> _saveTowManualAddress() async {
+    final input = _towManualAddressController.text.trim();
+    if (input.isEmpty) {
+      _showErrorSnackBar('Enter an address to continue', Icons.search);
+      return;
+    }
+
+    try {
+      final locations = await locationFromAddress(input);
+      if (locations.isEmpty) {
+        _showErrorSnackBar('Address not found', Icons.search_off);
+        return;
+      }
+
+      final selected = locations.first;
+      if (!mounted) return;
+      setState(() {
+        _pickupAddress = input;
+        _pickupLatLng = LatLng(selected.latitude, selected.longitude);
+        _vehicleType = _resolvedTowVehicle;
+        _plugType = null;
+        _towStep = 3;
+        _flowStep = 3;
+      });
+
+      _showSuccessSnackBar('Address saved. Searching nearby tow providers...');
+      await _searchNearbyBoosters();
+    } catch (_) {
+      _showErrorSnackBar('Could not resolve address', Icons.cloud_off);
+    }
+  }
+
   Future<void> _requestBoost(String driverId) async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
@@ -242,7 +386,12 @@ class _CustomerScreenState extends State<CustomerScreen> {
     }
 
     if (_vehicleType == null) {
-      _showErrorSnackBar('Choose Regular or Electric before inviting a booster', Icons.ev_station);
+      _showErrorSnackBar(
+        _serviceType == _serviceTypeTow
+            ? 'Choose your tow vehicle before requesting help'
+            : 'Choose Regular or Electric before inviting a booster',
+        Icons.ev_station,
+      );
       return;
     }
 
@@ -255,11 +404,13 @@ class _CustomerScreenState extends State<CustomerScreen> {
       final docRef = await FirebaseFirestore.instance.collection('requests').add({
         'customerId': user.uid,
         'driverId': driverId,
+        'serviceType': _serviceType,
         'status': 'pending',
         'pickupAddress': _pickupAddress,
         'pickupLatitude': _pickupLatLng!.latitude,
         'pickupLongitude': _pickupLatLng!.longitude,
         'vehicleType': _vehicleType,
+        'towVehicleType': _serviceType == _serviceTypeTow ? _vehicleType : null,
         'plugType': _plugType,
         'timestamp': FieldValue.serverTimestamp(),
       });
@@ -603,7 +754,11 @@ class _CustomerScreenState extends State<CustomerScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Battery Boost Assistance'),
+        title: Text(
+          _serviceType == _serviceTypeTow
+              ? 'Tow Assistance'
+              : 'Battery Boost Assistance',
+        ),
         actions: [
           IconButton(
             icon: const Icon(Icons.logout),
@@ -619,15 +774,17 @@ class _CustomerScreenState extends State<CustomerScreen> {
           ),
         ],
       ),
-      body: Container(
-        color: const Color(0xFFF3F3F7),
-        child: SafeArea(
-          child: Column(
-            children: [
-              Expanded(
-                child: ListView(
-                  padding: const EdgeInsets.fromLTRB(18, 14, 18, 14),
+      body: _serviceType == _serviceTypeTow
+          ? _buildTowFlow(context)
+          : Container(
+              color: const Color(0xFFF3F3F7),
+              child: SafeArea(
+                child: Column(
                   children: [
+                    Expanded(
+                      child: ListView(
+                        padding: const EdgeInsets.fromLTRB(18, 14, 18, 14),
+                        children: [
                     Container(
                       padding: const EdgeInsets.all(16),
                       decoration: BoxDecoration(
@@ -942,35 +1099,424 @@ class _CustomerScreenState extends State<CustomerScreen> {
                         ),
                       ),
                     ],
+                        ],
+                      ),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(18, 6, 18, 12),
+                      child: SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton(
+                          onPressed:
+                              _isBoostSelectionValid ? _continueBoostFlow : null,
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF5500FF),
+                            foregroundColor: Colors.white,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(22),
+                            ),
+                            padding: const EdgeInsets.symmetric(vertical: 18),
+                          ),
+                          child: const Text(
+                            'Continue',
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
                   ],
                 ),
               ),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(18, 6, 18, 12),
-                child: SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton(
-                    onPressed: _isBoostSelectionValid ? _continueBoostFlow : null,
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFF5500FF),
-                      foregroundColor: Colors.white,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(22),
+            ),
+    );
+  }
+
+  Widget _buildTowFlow(BuildContext context) {
+    final selectedTowVehicle = _resolvedTowVehicle ?? _towVehicleOptions.first;
+    final estimatedTowAmount = _estimateTowPrice(selectedTowVehicle);
+
+    return Container(
+      color: const Color(0xFFF3F3F7),
+      child: SafeArea(
+        child: ListView(
+          padding: const EdgeInsets.fromLTRB(18, 14, 18, 14),
+          children: [
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(22),
+                border: Border.all(color: const Color(0xFFE1E2EA)),
+                boxShadow: const [
+                  BoxShadow(
+                    color: Color(0x11000000),
+                    blurRadius: 10,
+                    offset: Offset(0, 2),
+                  ),
+                ],
+              ),
+              child: Column(
+                children: [
+                  Row(
+                    children: [
+                      Container(
+                        width: 56,
+                        height: 56,
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFCCEFF8),
+                          borderRadius: BorderRadius.circular(18),
+                        ),
+                        alignment: Alignment.center,
+                        child: Text(
+                          '${_towStep.clamp(1, 4)}',
+                          style: const TextStyle(
+                            color: Color(0xFF0E90AC),
+                            fontWeight: FontWeight.w700,
+                            fontSize: 34,
+                          ),
+                        ),
                       ),
-                      padding: const EdgeInsets.symmetric(vertical: 18),
+                      const SizedBox(width: 14),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              _towStep == 1 ? 'Choose Tow Type' : 'Set Your Location',
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .headlineSmall
+                                  ?.copyWith(fontWeight: FontWeight.w700),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              _towStep == 1
+                                  ? 'Pick the tow service that matches your vehicle before we search.'
+                                  : 'Save your current location or enter a different address.',
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .bodyLarge
+                                  ?.copyWith(color: const Color(0xFF666A7A)),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 14),
+                  _StepProgressRow(activeStep: _towStep.clamp(1, 4), totalSteps: 4),
+                ],
+              ),
+            ),
+            const SizedBox(height: 18),
+            if (_towStep == 1) ...[
+              Text(
+                'Select Your Vehicle Type',
+                style: Theme.of(context)
+                    .textTheme
+                    .headlineSmall
+                    ?.copyWith(fontWeight: FontWeight.w700),
+              ),
+              const SizedBox(height: 12),
+              DropdownButtonFormField<String>(
+                value: _showTowManualVehicle ? null : _selectedTowVehicle,
+                items: _towVehicleOptions
+                    .map((v) => DropdownMenuItem<String>(value: v, child: Text(v)))
+                    .toList(),
+                onChanged: _showTowManualVehicle
+                    ? null
+                    : (value) {
+                        setState(() {
+                          _selectedTowVehicle = value;
+                        });
+                      },
+                decoration: const InputDecoration(
+                  hintText: 'Choose vehicle',
+                ),
+              ),
+              const SizedBox(height: 10),
+              TextButton.icon(
+                onPressed: () {
+                  setState(() {
+                    _showTowManualVehicle = !_showTowManualVehicle;
+                    if (_showTowManualVehicle) {
+                      _selectedTowVehicle = null;
+                    }
+                  });
+                },
+                icon: const Icon(Icons.edit_note),
+                label: Text(
+                  _showTowManualVehicle
+                      ? 'Use dropdown instead'
+                      : 'Car not listed? Enter vehicle manually',
+                ),
+              ),
+              if (_showTowManualVehicle) ...[
+                const SizedBox(height: 8),
+                TextField(
+                  controller: _towManualVehicleController,
+                  decoration: const InputDecoration(
+                    labelText: 'Enter vehicle manually',
+                    hintText: 'Example: 2020 Ford F-150',
+                  ),
+                ),
+              ],
+              const SizedBox(height: 14),
+              Text(
+                'Selected: $selectedTowVehicle • Estimated total \$$estimatedTowAmount (incl. tax)',
+                style: Theme.of(context)
+                    .textTheme
+                    .bodyLarge
+                    ?.copyWith(color: const Color(0xFF6D7182)),
+              ),
+              const SizedBox(height: 18),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  onPressed: _continueTowStepOne,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF5500FF),
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(22),
                     ),
-                    child: const Text(
-                      'Continue',
-                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
-                    ),
+                    padding: const EdgeInsets.symmetric(vertical: 18),
+                  ),
+                  child: const Text(
+                    'Continue',
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
                   ),
                 ),
               ),
+            ] else ...[
+              Container(
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(18),
+                  border: Border.all(color: const Color(0xFFD6D7E0)),
+                ),
+                child: Column(
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: TextButton(
+                            onPressed: () => setState(() => _towLocationTabIndex = 0),
+                            child: Text(
+                              'Current Location',
+                              style: TextStyle(
+                                fontWeight: FontWeight.w700,
+                                color: _towLocationTabIndex == 0
+                                    ? const Color(0xFF5500FF)
+                                    : const Color(0xFF222638),
+                              ),
+                            ),
+                          ),
+                        ),
+                        Expanded(
+                          child: TextButton(
+                            onPressed: () => setState(() => _towLocationTabIndex = 1),
+                            child: Text(
+                              'Enter a Different Address',
+                              style: TextStyle(
+                                fontWeight: FontWeight.w700,
+                                color: _towLocationTabIndex == 1
+                                    ? const Color(0xFF5500FF)
+                                    : const Color(0xFF222638),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    Container(
+                      height: 3,
+                      margin: const EdgeInsets.symmetric(horizontal: 14),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Container(
+                              decoration: BoxDecoration(
+                                color: _towLocationTabIndex == 0
+                                    ? const Color(0xFF5500FF)
+                                    : Colors.transparent,
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 14),
+                          Expanded(
+                            child: Container(
+                              decoration: BoxDecoration(
+                                color: _towLocationTabIndex == 1
+                                    ? const Color(0xFF5500FF)
+                                    : Colors.transparent,
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    if (_towLocationTabIndex == 0)
+                      Container(
+                        margin: const EdgeInsets.symmetric(horizontal: 14),
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFF7F7FA),
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(color: const Color(0xFFD6D7E0)),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Row(
+                              children: [
+                                Icon(Icons.my_location, color: Color(0xFF2BC8E8)),
+                                SizedBox(width: 8),
+                                Text('Detected Location', style: TextStyle(fontWeight: FontWeight.w700)),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              _towDetectedLocationAddress ?? 'Detecting current location...',
+                              style: Theme.of(context).textTheme.bodyLarge,
+                            ),
+                          ],
+                        ),
+                      )
+                    else
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 14),
+                        child: TextField(
+                          controller: _towManualAddressController,
+                          decoration: const InputDecoration(
+                            labelText: 'Enter address',
+                            prefixIcon: Icon(Icons.search),
+                          ),
+                        ),
+                      ),
+                    const SizedBox(height: 14),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
+                      child: SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton(
+                          onPressed: _towLocationTabIndex == 0
+                              ? _saveTowCurrentLocation
+                              : _saveTowManualAddress,
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF5500FF),
+                            foregroundColor: Colors.white,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(18),
+                            ),
+                            padding: const EdgeInsets.symmetric(vertical: 16),
+                          ),
+                          child: Text(
+                            _towLocationTabIndex == 0
+                                ? 'Save Current Location'
+                                : 'Save Address',
+                            style: const TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              if (_pickupAddress != null) ...[
+                const SizedBox(height: 14),
+                Text(
+                  'Searching area for available service providers...',
+                  style: Theme.of(context)
+                      .textTheme
+                      .bodyLarge
+                      ?.copyWith(color: const Color(0xFF6D7182)),
+                ),
+              ],
+              if (_isSearchingBoosters)
+                const Padding(
+                  padding: EdgeInsets.only(top: 8),
+                  child: LinearProgressIndicator(),
+                ),
+              if (_nearbyBoosters.isNotEmpty) ...[
+                const SizedBox(height: 10),
+                ..._nearbyBoosters.map((booster) {
+                  return Container(
+                    margin: const EdgeInsets.only(bottom: 8),
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: const Color(0xFFE2E4ED)),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.local_shipping, color: Color(0xFF0EA5E9)),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            '${booster.displayName} • ${booster.distanceKm.toStringAsFixed(1)} km • ETA ${booster.etaMinutes} min',
+                            style: Theme.of(context).textTheme.bodyMedium,
+                          ),
+                        ),
+                        ElevatedButton(
+                          onPressed: _isWaitingForBooster
+                              ? null
+                              : () => _requestBoost(booster.userId),
+                          child: const Text('Request'),
+                        ),
+                      ],
+                    ),
+                  );
+                }),
+              ],
+              if (_activeRequestId != null) ...[
+                const SizedBox(height: 12),
+                _RequestStatusCard(
+                  status: _activeRequestStatus ?? 'pending',
+                  driverId: _activeDriverId,
+                  onPayNow: _activeRequestStatus == 'awaiting_payment'
+                      ? () => _showPaymentSheet(_activeRequestId!)
+                      : null,
+                ),
+              ],
+              if (_providerEtaSummary != null) ...[
+                const SizedBox(height: 10),
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF0EA5E9).withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: const Color(0xFF0EA5E9).withValues(alpha: 0.5)),
+                  ),
+                  child: Text(_providerEtaSummary!, style: Theme.of(context).textTheme.bodyMedium),
+                ),
+              ],
             ],
-          ),
+          ],
         ),
       ),
     );
+  }
+
+  String _estimateTowPrice(String vehicleTypeLabel) {
+    final normalized = vehicleTypeLabel.toLowerCase();
+    if (normalized.contains('pickup') || normalized.contains('van')) {
+      return '282.50';
+    }
+    if (normalized.contains('suv')) {
+      return '209.05';
+    }
+    return '152.55';
   }
 
   Set<Marker> _buildMarkers() {
@@ -1791,8 +2337,18 @@ class _PickupSelectorSheetState extends State<_PickupSelectorSheet> {
   }
 }
 
+const String _serviceTypeBoost = 'boost';
+const String _serviceTypeTow = 'tow';
+
 const String _regularVehicleType = 'regular';
 const String _electricVehicleType = 'electric';
+const List<String> _towVehicleOptions = <String>[
+  'Car Tow',
+  'SUV Tow',
+  'Pickup / Van Tow',
+  'Motorcycle Tow',
+  'Light Truck Tow',
+];
 const List<String> _plugTypes = <String>[
   'J1772 Type 1',
   'Type 2',
