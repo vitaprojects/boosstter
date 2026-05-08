@@ -14,63 +14,29 @@ class BoosterLogo extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final onSurface = theme.colorScheme.onSurface;
-    final subtitleColor = onSurface.withValues(alpha: 0.7);
-
     final mark = SizedBox(
       width: size,
       height: size,
-      child: Image.asset('assets/branding/booster_mark.png'),
+      child: Image.asset(
+        'assets/branding/booster_mark.png',
+        fit: BoxFit.cover,
+      ),
     );
 
     if (!showWordmark) {
       return mark;
     }
 
-    final wordmark = Column(
-      crossAxisAlignment:
-          compact ? CrossAxisAlignment.center : CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Text(
-          'Booster',
-          style: TextStyle(
-            fontSize: compact ? size * 0.24 : size * 0.28,
-            fontWeight: FontWeight.w800,
-            letterSpacing: 0.2,
-            color: onSurface,
-          ),
-        ),
-        Text(
-          'Fast roadside energy',
-          style: TextStyle(
-            fontSize: compact ? size * 0.11 : size * 0.13,
-            fontWeight: FontWeight.w500,
-            color: subtitleColor,
-          ),
-        ),
-      ],
+    final lockup = Image.asset(
+      'assets/branding/brand_lockup.png',
+      width: compact ? size * 2.0 : size * 3.2,
+      fit: BoxFit.contain,
     );
 
     if (compact) {
-      return Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          mark,
-          SizedBox(height: size * 0.16),
-          wordmark,
-        ],
-      );
+      return lockup;
     }
 
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        mark,
-        SizedBox(width: size * 0.18),
-        wordmark,
-      ],
-    );
+    return lockup;
   }
 }
