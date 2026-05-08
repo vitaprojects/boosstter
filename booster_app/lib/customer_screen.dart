@@ -22,6 +22,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
   bool _isLoading = true;
   bool _hasLocationPermission = false;
   bool _isSearchingBoosters = false;
+  int _flowStep = 1;
   GoogleMapController? _mapController;
 
   String? _pickupAddress;
@@ -36,6 +37,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
   String? _activeRequestId;
   String? _activeRequestStatus;
   String? _activeDriverId;
+  String? _providerEtaSummary;
 
   bool get _isWaitingForBooster {
     return _activeRequestStatus == 'pending' ||
@@ -181,6 +183,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
       _pickupLatLng = selection.latLng;
       _vehicleType = selection.vehicleType;
       _plugType = selection.plugType;
+      _flowStep = 2;
       _nearbyBoosters.clear();
     });
 
@@ -266,6 +269,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
           _activeRequestId = docRef.id;
           _activeRequestStatus = 'pending';
           _activeDriverId = driverId;
+          _flowStep = 4;
         });
         _showSuccessSnackBar(
           'Invite sent. Waiting for booster confirmation.',
@@ -287,7 +291,12 @@ class _CustomerScreenState extends State<CustomerScreen> {
       return;
     }
 
-    setState(() => _isSearchingBoosters = true);
+    setState(() {
+      _isSearchingBoosters = true;
+      if (_flowStep < 3) {
+        _flowStep = 3;
+      }
+    });
 
     try {
       final currentUserId = FirebaseAuth.instance.currentUser?.uid;
@@ -339,6 +348,9 @@ class _CustomerScreenState extends State<CustomerScreen> {
         _nearbyBoosters
           ..clear()
           ..addAll(boosters);
+        if (_flowStep < 3) {
+          _flowStep = 3;
+        }
       });
 
       if (boosters.isEmpty) {
@@ -399,11 +411,21 @@ class _CustomerScreenState extends State<CustomerScreen> {
       final data = doc.data();
       final newStatus = (data['status'] ?? 'pending').toString();
       final prevStatus = _activeRequestStatus;
+      final requestPickupAddress = data['pickupAddress']?.toString();
+      final requestPickupLat = (data['pickupLatitude'] as num?)?.toDouble();
+      final requestPickupLng = (data['pickupLongitude'] as num?)?.toDouble();
 
       setState(() {
         _activeRequestId = doc.id;
         _activeRequestStatus = newStatus;
         _activeDriverId = data['driverId']?.toString();
+        _pickupAddress = _pickupAddress ?? requestPickupAddress;
+        if (_pickupLatLng == null && requestPickupLat != null && requestPickupLng != null) {
+          _pickupLatLng = LatLng(requestPickupLat, requestPickupLng);
+        }
+        if (newStatus == 'pending' || newStatus == 'awaiting_payment' || newStatus == 'paid' || newStatus == 'accepted' || newStatus == 'en_route') {
+          _flowStep = 4;
+        }
       });
 
       // Auto-show payment sheet when booster accepts (fires once)
@@ -412,7 +434,59 @@ class _CustomerScreenState extends State<CustomerScreen> {
           if (mounted) _showPaymentSheet(doc.id);
         });
       }
+
+      if ((newStatus == 'accepted' || newStatus == 'en_route') &&
+          prevStatus != newStatus &&
+          _activeDriverId != null) {
+        _notifyProviderEta(_activeDriverId!);
+      }
     });
+  }
+
+  Future<void> _notifyProviderEta(String driverId) async {
+    if (_pickupLatLng == null) {
+      return;
+    }
+
+    try {
+      final providerDoc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(driverId)
+          .get();
+
+      if (!mounted || !providerDoc.exists) {
+        return;
+      }
+
+      final data = providerDoc.data();
+      final lat = (data?['latitude'] as num?)?.toDouble();
+      final lng = (data?['longitude'] as num?)?.toDouble();
+      if (lat == null || lng == null || (lat == 0.0 && lng == 0.0)) {
+        _showSuccessSnackBar('Provider accepted and is heading to your location.');
+        return;
+      }
+
+      final distanceMeters = Geolocator.distanceBetween(
+        _pickupLatLng!.latitude,
+        _pickupLatLng!.longitude,
+        lat,
+        lng,
+      );
+      final distanceKm = distanceMeters / 1000.0;
+      final distanceMi = distanceKm * 0.621371;
+      final etaMinutes = ((distanceKm / 40.0) * 60.0).ceil().clamp(1, 240);
+
+      final summary =
+          'Provider is heading to you • ETA $etaMinutes min • ${distanceKm.toStringAsFixed(1)} km (${distanceMi.toStringAsFixed(1)} mi)';
+      if (!mounted) return;
+      setState(() {
+        _providerEtaSummary = summary;
+      });
+      _showSuccessSnackBar(summary);
+    } catch (_) {
+      if (!mounted) return;
+      _showSuccessSnackBar('Provider accepted and is heading to your location.');
+    }
   }
 
   Future<void> _showPaymentSheet(String requestId) async {
@@ -580,8 +654,8 @@ class _CustomerScreenState extends State<CustomerScreen> {
                                   borderRadius: BorderRadius.circular(18),
                                 ),
                                 alignment: Alignment.center,
-                                child: const Text(
-                                  '1',
+                                child: Text(
+                                  '${_flowStep.clamp(1, 4)}',
                                   style: TextStyle(
                                     color: Color(0xFF0E90AC),
                                     fontWeight: FontWeight.w700,
@@ -615,7 +689,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
                             ],
                           ),
                           const SizedBox(height: 14),
-                          const _StepProgressRow(activeStep: 1, totalSteps: 4),
+                          _StepProgressRow(activeStep: _flowStep.clamp(1, 4), totalSteps: 4),
                         ],
                       ),
                     ),
@@ -689,6 +763,182 @@ class _CustomerScreenState extends State<CustomerScreen> {
                               }),
                             );
                           },
+                        ),
+                      ),
+                    ],
+                    if (_pickupAddress != null) ...[
+                      const SizedBox(height: 18),
+                      Container(
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(16),
+                          border: Border.all(color: const Color(0xFFDCE8F8)),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Pickup Location Confirmed',
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .titleMedium
+                                  ?.copyWith(fontWeight: FontWeight.w700),
+                            ),
+                            const SizedBox(height: 8),
+                            Row(
+                              children: [
+                                const Icon(Icons.pin_drop, color: Color(0xFF0EA5E9)),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    _pickupAddress!,
+                                    style: Theme.of(context).textTheme.bodyLarge,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 12),
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: OutlinedButton.icon(
+                                    onPressed: () => _openPickupSelector(
+                                      vehicleType: _selectedBoostVehicleType ?? _regularVehicleType,
+                                      plugType: _selectedBoostPlugType,
+                                    ),
+                                    icon: const Icon(Icons.edit_location_alt),
+                                    label: const Text('Change Location'),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: ElevatedButton.icon(
+                                    onPressed: _isSearchingBoosters ? null : _searchNearbyBoosters,
+                                    icon: _isSearchingBoosters
+                                        ? const SizedBox(
+                                            width: 14,
+                                            height: 14,
+                                            child: CircularProgressIndicator(strokeWidth: 2),
+                                          )
+                                        : const Icon(Icons.search),
+                                    label: const Text('Search Providers'),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                    const SizedBox(height: 16),
+                    Text(
+                      'Nearby Service Providers',
+                      style: Theme.of(context)
+                          .textTheme
+                          .titleLarge
+                          ?.copyWith(fontWeight: FontWeight.w700),
+                    ),
+                    const SizedBox(height: 8),
+                    if (_pickupAddress == null)
+                      Text(
+                        'Choose boost type and continue to set location first.',
+                        style: Theme.of(context)
+                            .textTheme
+                            .bodyLarge
+                            ?.copyWith(color: const Color(0xFF737687)),
+                      )
+                    else if (_isSearchingBoosters)
+                      const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 10),
+                        child: LinearProgressIndicator(),
+                      )
+                    else if (_nearbyBoosters.isEmpty)
+                      Text(
+                        'No providers found nearby yet. Tap Search Providers to refresh.',
+                        style: Theme.of(context)
+                            .textTheme
+                            .bodyLarge
+                            ?.copyWith(color: const Color(0xFF737687)),
+                      )
+                    else
+                      Column(
+                        children: _nearbyBoosters.map((booster) {
+                          return Container(
+                            margin: const EdgeInsets.only(bottom: 8),
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: Colors.white,
+                              borderRadius: BorderRadius.circular(14),
+                              border: Border.all(color: const Color(0xFFE2E4ED)),
+                            ),
+                            child: Row(
+                              children: [
+                                const Icon(Icons.directions_car, color: Color(0xFF6366F1)),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        booster.displayName,
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .titleSmall
+                                            ?.copyWith(fontWeight: FontWeight.w700),
+                                      ),
+                                      const SizedBox(height: 2),
+                                      Text(
+                                        '${booster.distanceKm.toStringAsFixed(1)} km • ETA ${booster.etaMinutes} min',
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .bodyMedium
+                                            ?.copyWith(color: const Color(0xFF6D7182)),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                ElevatedButton(
+                                  onPressed: _isWaitingForBooster
+                                      ? null
+                                      : () => _requestBoost(booster.userId),
+                                  child: const Text('Request'),
+                                ),
+                              ],
+                            ),
+                          );
+                        }).toList(),
+                      ),
+                    if (_activeRequestId != null) ...[
+                      const SizedBox(height: 14),
+                      _RequestStatusCard(
+                        status: _activeRequestStatus ?? 'pending',
+                        driverId: _activeDriverId,
+                        onPayNow: _activeRequestStatus == 'awaiting_payment'
+                            ? () => _showPaymentSheet(_activeRequestId!)
+                            : null,
+                      ),
+                    ],
+                    if (_providerEtaSummary != null) ...[
+                      const SizedBox(height: 10),
+                      Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF0EA5E9).withValues(alpha: 0.12),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: const Color(0xFF0EA5E9).withValues(alpha: 0.5)),
+                        ),
+                        child: Row(
+                          children: [
+                            const Icon(Icons.local_shipping, color: Color(0xFF0EA5E9)),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                _providerEtaSummary!,
+                                style: Theme.of(context).textTheme.bodyMedium,
+                              ),
+                            ),
+                          ],
                         ),
                       ),
                     ],
