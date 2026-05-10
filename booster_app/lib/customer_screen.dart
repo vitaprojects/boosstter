@@ -51,6 +51,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
   String? _activeRequestId;
   String? _activeRequestStatus;
   String? _activeDriverId;
+  String? _activeServiceType;
   String? _providerEtaSummary;
 
   // Step 4 tracking
@@ -490,6 +491,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
         _activeRequestId = requestRef.id;
         _activeRequestStatus = 'pending';
         _activeDriverId = nearestProvider.userId;
+        _activeServiceType = _serviceTypeTow;
         _towStep = 4;
         _flowStep = 4;
       });
@@ -597,6 +599,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
           _activeRequestId = docRef.id;
           _activeRequestStatus = 'pending';
           _activeDriverId = driverId;
+          _activeServiceType = _serviceTypeBoost;
           _flowStep = 4;
         });
         _showSuccessSnackBar(
@@ -731,6 +734,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
           _activeRequestId = null;
           _activeRequestStatus = null;
           _activeDriverId = null;
+          _activeServiceType = null;
         });
         return;
       }
@@ -747,6 +751,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
         _activeRequestId = doc.id;
         _activeRequestStatus = newStatus;
         _activeDriverId = data['driverId']?.toString();
+        _activeServiceType = data['serviceType']?.toString();
         _pickupAddress = _pickupAddress ?? requestPickupAddress;
         if (_pickupLatLng == null && requestPickupLat != null && requestPickupLng != null) {
           _pickupLatLng = LatLng(requestPickupLat, requestPickupLng);
@@ -875,6 +880,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
       _activeRequestId = null;
       _activeRequestStatus = null;
       _activeDriverId = null;
+      _activeServiceType = null;
       _providerEtaSummary = null;
       _providerDisplayName = null;
       _providerDistanceKm = null;
@@ -998,6 +1004,13 @@ class _CustomerScreenState extends State<CustomerScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final hasActiveOrder = _activeRequestId != null ||
+        _activeRequestStatus == 'awaiting_payment' ||
+        _activeRequestStatus == 'paid' ||
+        _activeRequestStatus == 'accepted' ||
+        _activeRequestStatus == 'en_route' ||
+        _activeRequestStatus == 'completed';
+
     return Scaffold(
       appBar: AppBar(
         title: Text(
@@ -1020,9 +1033,11 @@ class _CustomerScreenState extends State<CustomerScreen> {
           ),
         ],
       ),
-      body: _serviceType == _serviceTypeTow
-          ? _buildTowFlow(context)
-          : _buildBoostFlow(context),
+      body: hasActiveOrder
+          ? _buildBoostStep4(context)
+          : (_serviceType == _serviceTypeTow
+              ? _buildTowFlow(context)
+              : _buildBoostFlow(context)),
     );
   }
 
@@ -1585,6 +1600,8 @@ class _CustomerScreenState extends State<CustomerScreen> {
   // ── Step 4: live tracking, searching, no-provider, completion ─────────────
   Widget _buildBoostStep4(BuildContext context) {
     final status = _activeRequestStatus ?? 'pending';
+    final activeService = _activeServiceType ?? _serviceType;
+    final isTowOrder = activeService == _serviceTypeTow;
     final hasProvider = _activeDriverId != null &&
         (status == 'accepted' || status == 'en_route' || status == 'paid' || status == 'completed');
     final isCompleted = status == 'completed';
@@ -1716,7 +1733,9 @@ class _CustomerScreenState extends State<CustomerScreen> {
       appBar: AppBar(
         automaticallyImplyLeading: false,
         title: Text(
-          _showTrackingMap ? 'Provider Tracking Map' : 'Requests',
+          _showTrackingMap
+              ? (isTowOrder ? 'Tow Tracking Map' : 'Provider Tracking Map')
+              : 'Requests',
           style: const TextStyle(fontWeight: FontWeight.w700),
         ),
       ),
@@ -1737,7 +1756,9 @@ class _CustomerScreenState extends State<CustomerScreen> {
                       Marker(
                         markerId: const MarkerId('provider'),
                         position: LatLng(_providerLat!, _providerLng!),
-                        infoWindow: InfoWindow(title: _providerDisplayName ?? 'Provider'),
+                        infoWindow: InfoWindow(
+                            title: _providerDisplayName ??
+                                (isTowOrder ? 'Tow Operator' : 'Provider')),
                         icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueGreen),
                       ),
                   },
@@ -1765,7 +1786,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
                       Text('Request ID: ${_activeRequestId ?? 'Pending'}',
                           style: const TextStyle(color: Color(0xFF4B5563))),
                       const SizedBox(height: 4),
-                      Text('Service: ${_serviceType == _serviceTypeTow ? 'Tow Assistance' : 'Battery Boost'}',
+                        Text('Service: ${isTowOrder ? 'Tow Assistance' : 'Battery Boost'}',
                           style: const TextStyle(color: Color(0xFF4B5563))),
                       const SizedBox(height: 4),
                       Text('Status: ${_statusLabel(status)}',
@@ -1828,7 +1849,9 @@ class _CustomerScreenState extends State<CustomerScreen> {
                                 children: [
                                   Text(_providerDisplayName!,
                                       style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
-                                  Text('Certified Battery Boost Provider',
+                                    Text(isTowOrder
+                                      ? 'Verified Tow Operator'
+                                      : 'Certified Battery Boost Provider',
                                       style: TextStyle(color: Colors.grey[600], fontSize: 13)),
                                 ],
                               ),
@@ -1929,15 +1952,18 @@ class _CustomerScreenState extends State<CustomerScreen> {
                       children: [
                         const Icon(Icons.check_circle, color: Color(0xFF16A34A), size: 48),
                         const SizedBox(height: 12),
-                        const Text('Boost Complete!',
-                            style: TextStyle(
-                                fontSize: 20,
-                                fontWeight: FontWeight.w800,
-                                color: Color(0xFF15803D))),
+                        Text(isTowOrder ? 'Tow Complete!' : 'Boost Complete!',
+                          style: const TextStyle(
+                            fontSize: 20,
+                            fontWeight: FontWeight.w800,
+                            color: Color(0xFF15803D))),
                         const SizedBox(height: 6),
-                        const Text('Your battery has been boosted. Thanks for using Boosstter!',
-                            textAlign: TextAlign.center,
-                            style: TextStyle(color: Color(0xFF166534))),
+                        Text(
+                          isTowOrder
+                            ? 'Your tow order is complete. Thanks for using Boosstter!'
+                            : 'Your battery has been boosted. Thanks for using Boosstter!',
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(color: Color(0xFF166534))),
                         const SizedBox(height: 16),
                         ElevatedButton(
                           onPressed: () => _promptReview(_activeRequestId ?? ''),

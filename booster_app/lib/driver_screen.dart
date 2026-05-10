@@ -21,11 +21,13 @@ class _DriverScreenState extends State<DriverScreen> {
   // Active job state
   String? _activeRequestId;
   String? _activeRequestStatus; // pending | accepted | en_route | completed
+  String? _activeServiceType;
   String? _activePickupAddress;
   double? _activePickupLat;
   double? _activePickupLng;
   String? _activeVehicleType;
   String? _activePlugType;
+  String? _activeTowReason;
   StreamSubscription<QuerySnapshot>? _activeJobSub;
 
   bool get _hasActiveJob =>
@@ -85,11 +87,13 @@ class _DriverScreenState extends State<DriverScreen> {
             setState(() {
               _activeRequestId = null;
               _activeRequestStatus = null;
+              _activeServiceType = null;
               _activePickupAddress = null;
               _activePickupLat = null;
               _activePickupLng = null;
               _activeVehicleType = null;
               _activePlugType = null;
+              _activeTowReason = null;
             });
           } else {
             final doc = snap.docs.first;
@@ -97,11 +101,13 @@ class _DriverScreenState extends State<DriverScreen> {
             setState(() {
               _activeRequestId = doc.id;
               _activeRequestStatus = data['status'];
+              _activeServiceType = data['serviceType']?.toString();
               _activePickupAddress = data['pickupAddress'];
               _activePickupLat = (data['pickupLatitude'] as num?)?.toDouble();
               _activePickupLng = (data['pickupLongitude'] as num?)?.toDouble();
               _activeVehicleType = data['vehicleType']?.toString();
               _activePlugType = data['plugType']?.toString();
+              _activeTowReason = data['towReason']?.toString();
             });
           }
         });
@@ -309,9 +315,16 @@ class _DriverScreenState extends State<DriverScreen> {
               ),
               const SizedBox(height: 4),
               Text(
-                'Service: Battery Boost',
+                'Service: ${_activeServiceType == 'tow' ? 'Tow Assistance' : 'Battery Boost'}',
                 style: const TextStyle(color: Colors.white70, fontSize: 13),
               ),
+              if (_activeServiceType == 'tow' && _activeTowReason != null) ...[
+                const SizedBox(height: 4),
+                Text(
+                  'Tow Reason: $_activeTowReason',
+                  style: const TextStyle(color: Colors.white70, fontSize: 13),
+                ),
+              ],
             ],
           ),
         ),
@@ -425,6 +438,7 @@ class _DriverScreenState extends State<DriverScreen> {
 
   Widget _buildActiveJobCard() {
     final status = _activeRequestStatus ?? 'pending';
+    final isTowOrder = _activeServiceType == 'tow';
     final Color statusColor;
     final IconData statusIcon;
     final String statusLabel;
@@ -435,7 +449,7 @@ class _DriverScreenState extends State<DriverScreen> {
       case 'pending':
         statusColor = const Color(0xFFF59E0B);
         statusIcon = Icons.hourglass_top;
-        statusLabel = 'New Boost Request';
+        statusLabel = isTowOrder ? 'New Tow Request' : 'New Boost Request';
         actionLabel = 'Accept Request';
         nextStatus = 'awaiting_payment';
         break;
@@ -449,7 +463,9 @@ class _DriverScreenState extends State<DriverScreen> {
       case 'paid':
         statusColor = const Color(0xFF22C55E);
         statusIcon = Icons.check_circle;
-        statusLabel = 'Payment Received — Head to Customer';
+        statusLabel = isTowOrder
+            ? 'Payment Received — Dispatch Tow Truck'
+            : 'Payment Received — Head to Customer';
         actionLabel = "I'm En Route";
         nextStatus = 'en_route';
         break;
@@ -462,8 +478,8 @@ class _DriverScreenState extends State<DriverScreen> {
         break;
       case 'en_route':
         statusColor = const Color(0xFF22D3EE);
-        statusIcon = Icons.electric_bolt;
-        statusLabel = 'En Route — Boosting Now';
+        statusIcon = isTowOrder ? Icons.local_shipping : Icons.electric_bolt;
+        statusLabel = isTowOrder ? 'En Route — Towing in Progress' : 'En Route — Boosting Now';
         actionLabel = 'Mark Completed';
         nextStatus = 'completed';
         break;
@@ -536,18 +552,22 @@ class _DriverScreenState extends State<DriverScreen> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Icon(
-                        _activeVehicleType == 'electric'
-                            ? Icons.ev_station
-                            : Icons.directions_car,
+                        isTowOrder
+                            ? Icons.local_shipping
+                            : (_activeVehicleType == 'electric'
+                                ? Icons.ev_station
+                                : Icons.directions_car),
                         color: const Color(0xFF22C55E),
                         size: 18,
                       ),
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
-                          _activeVehicleType == 'electric'
-                              ? 'Electric vehicle${_activePlugType == null ? '' : ' • $_activePlugType'}'
-                              : 'Regular vehicle',
+                          isTowOrder
+                              ? 'Tow service${_activeTowReason == null ? '' : ' • $_activeTowReason'}'
+                              : (_activeVehicleType == 'electric'
+                                  ? 'Electric vehicle${_activePlugType == null ? '' : ' • $_activePlugType'}'
+                                  : 'Regular vehicle'),
                           style: const TextStyle(
                             color: Colors.white70,
                             fontSize: 13,
@@ -664,9 +684,11 @@ class _DriverScreenState extends State<DriverScreen> {
         return Column(
           children: docs.map((doc) {
             final data = doc.data() as Map<String, dynamic>;
+            final serviceType = data['serviceType']?.toString() ?? 'boost';
             final address = data['pickupAddress'] ?? 'Unknown location';
             final vehicleType = data['vehicleType']?.toString();
             final plugType = data['plugType']?.toString();
+            final towReason = data['towReason']?.toString();
             final ts = data['timestamp'] as Timestamp?;
             final timeAgo = ts != null
                 ? _formatTimeAgo(ts.toDate())
@@ -687,8 +709,8 @@ class _DriverScreenState extends State<DriverScreen> {
                     children: [
                       const Icon(Icons.person, color: Color(0xFF6366F1), size: 18),
                       const SizedBox(width: 8),
-                      const Text('Boost Request',
-                          style: TextStyle(
+                        Text(serviceType == 'tow' ? 'Tow Request' : 'Boost Request',
+                          style: const TextStyle(
                               color: Colors.white,
                               fontWeight: FontWeight.bold,
                               fontSize: 15)),
@@ -718,18 +740,22 @@ class _DriverScreenState extends State<DriverScreen> {
                     Row(
                       children: [
                         Icon(
-                          vehicleType == 'electric'
-                              ? Icons.ev_station
-                              : Icons.directions_car,
+                          serviceType == 'tow'
+                              ? Icons.local_shipping
+                              : (vehicleType == 'electric'
+                                  ? Icons.ev_station
+                                  : Icons.directions_car),
                           color: const Color(0xFF22D3EE),
                           size: 16,
                         ),
                         const SizedBox(width: 6),
                         Expanded(
                           child: Text(
-                            vehicleType == 'electric'
-                                ? 'Electric${plugType == null ? '' : ' • $plugType'}'
-                                : 'Regular',
+                            serviceType == 'tow'
+                                ? 'Tow${towReason == null ? '' : ' • $towReason'}'
+                                : (vehicleType == 'electric'
+                                    ? 'Electric${plugType == null ? '' : ' • $plugType'}'
+                                    : 'Regular'),
                             style: const TextStyle(
                               color: Colors.white70,
                               fontSize: 13,
