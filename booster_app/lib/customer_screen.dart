@@ -485,6 +485,23 @@ class _CustomerScreenState extends State<CustomerScreen> {
     }
   }
 
+  Future<void> _confirmBoostAndRequest() async {
+    if (_pickupLatLng == null || _pickupAddress == null) {
+      _showErrorSnackBar('No location set', Icons.place);
+      return;
+    }
+    if (_isSearchingBoosters) return;
+    if (_nearbyBoosters.isEmpty) {
+      await _searchNearbyBoosters();
+      if (!mounted) return;
+    }
+    if (_nearbyBoosters.isEmpty) {
+      _showErrorSnackBar('No providers found nearby. Try again in a moment.', Icons.search_off);
+      return;
+    }
+    await _requestBoost(_nearbyBoosters.first.userId);
+  }
+
   Future<void> _requestBoost(String driverId) async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
@@ -893,7 +910,222 @@ class _CustomerScreenState extends State<CustomerScreen> {
       ),
       body: _serviceType == _serviceTypeTow
           ? _buildTowFlow(context)
-          : Container(
+          : _buildBoostFlow(context),
+    );
+  }
+
+  Widget _buildBoostFlow(BuildContext context) {
+    // Step 3+: review & pay page
+    if (_flowStep >= 3) {
+      final vehicleLabel = _selectedBoostVehicleType == _electricVehicleType
+          ? 'Electric Car Boost${_selectedBoostPlugType != null ? ' (${_selectedBoostPlugType})' : ''}'
+          : 'Regular Car Boost';
+      final priceDisplay =
+          '\$${(boostPaymentTotalCadCents / 100).toStringAsFixed(2)}';
+
+      return Container(
+        color: const Color(0xFFF3F3F7),
+        child: SafeArea(
+          child: ListView(
+            padding: const EdgeInsets.fromLTRB(18, 14, 18, 14),
+            children: [
+              // Step header
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(22),
+                  border: Border.all(color: const Color(0xFFE1E2EA)),
+                  boxShadow: const [
+                    BoxShadow(color: Color(0x11000000), blurRadius: 10, offset: Offset(0, 2)),
+                  ],
+                ),
+                child: Column(
+                  children: [
+                    Row(
+                      children: [
+                        Container(
+                          width: 56,
+                          height: 56,
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFCCEFF8),
+                            borderRadius: BorderRadius.circular(18),
+                          ),
+                          alignment: Alignment.center,
+                          child: const Text(
+                            '3',
+                            style: TextStyle(
+                              color: Color(0xFF0E90AC),
+                              fontWeight: FontWeight.w700,
+                              fontSize: 34,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 14),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Request Battery Boost',
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .headlineSmall
+                                    ?.copyWith(fontWeight: FontWeight.w700),
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                'Review your request including location address before requesting.',
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .bodyLarge
+                                    ?.copyWith(color: const Color(0xFF666A7A)),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 14),
+                    _StepProgressRow(activeStep: 3, totalSteps: 4),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 14),
+              // Current Selection card
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(18),
+                  border: Border.all(color: const Color(0xFFE1E2EA)),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Current Selection',
+                      style: Theme.of(context)
+                          .textTheme
+                          .titleLarge
+                          ?.copyWith(fontWeight: FontWeight.w700),
+                    ),
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        const Icon(Icons.directions_car, color: Color(0xFF2BC8E8)),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(vehicleLabel,
+                              style: Theme.of(context).textTheme.bodyLarge),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    Row(
+                      children: [
+                        const Icon(Icons.place, color: Color(0xFF6366F1)),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(_pickupAddress ?? '',
+                              style: Theme.of(context).textTheme.bodyLarge),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 14),
+              // Ready to Request card
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(18),
+                  border: Border.all(color: const Color(0xFFE1E2EA)),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Ready to Request?',
+                      style: Theme.of(context)
+                          .textTheme
+                          .headlineSmall
+                          ?.copyWith(fontWeight: FontWeight.w700),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'We will search for battery boost providers currently available near your saved location.',
+                      style: Theme.of(context)
+                          .textTheme
+                          .bodyLarge
+                          ?.copyWith(color: const Color(0xFF666A7A)),
+                    ),
+                    const SizedBox(height: 16),
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton(
+                        onPressed: _isSearchingBoosters || _isWaitingForBooster
+                            ? null
+                            : _confirmBoostAndRequest,
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF5500FF),
+                          foregroundColor: Colors.white,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(22),
+                          ),
+                          padding: const EdgeInsets.symmetric(vertical: 18),
+                        ),
+                        child: _isSearchingBoosters
+                            ? const SizedBox(
+                                width: 22,
+                                height: 22,
+                                child:
+                                    CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                              )
+                            : Text(
+                                'Request Battery Boost • Pay $priceDisplay',
+                                style: const TextStyle(
+                                    fontSize: 18, fontWeight: FontWeight.w700),
+                              ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              if (_activeRequestId != null) ...[
+                const SizedBox(height: 14),
+                _RequestStatusCard(
+                  status: _activeRequestStatus ?? 'pending',
+                  driverId: _activeDriverId,
+                  onPayNow: _activeRequestStatus == 'awaiting_payment'
+                      ? () => _showPaymentSheet(_activeRequestId!)
+                      : null,
+                ),
+              ],
+              if (_providerEtaSummary != null) ...[
+                const SizedBox(height: 10),
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF0EA5E9).withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                        color: const Color(0xFF0EA5E9).withValues(alpha: 0.5)),
+                  ),
+                  child: Text(_providerEtaSummary!,
+                      style: Theme.of(context).textTheme.bodyMedium),
+                ),
+              ],
+            ],
+          ),
+        ),
+      );
+    }
+
+    // Steps 1 & 2: vehicle selection page
+    return Container(
               color: const Color(0xFFF3F3F7),
               child: SafeArea(
                 child: Column(
@@ -930,7 +1162,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
                                 alignment: Alignment.center,
                                 child: Text(
                                   '${_flowStep.clamp(1, 4)}',
-                                  style: TextStyle(
+                                  style: const TextStyle(
                                     color: Color(0xFF0E90AC),
                                     fontWeight: FontWeight.w700,
                                     fontSize: 34,
@@ -1247,8 +1479,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
                   ],
                 ),
               ),
-            ),
-    );
+            );
   }
 
   Widget _buildTowFlow(BuildContext context) {
