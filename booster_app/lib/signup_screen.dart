@@ -19,6 +19,8 @@ class _SignupScreenState extends State<SignupScreen> {
   final _confirmPasswordController = TextEditingController();
   String _selectedRole = customerRole;
   bool _isLoading = false;
+  bool _obscurePassword = true;
+  bool _obscureConfirmPassword = true;
 
   Future<void> _signup() async {
     if (_passwordController.text != _confirmPasswordController.text) {
@@ -190,8 +192,19 @@ class _SignupScreenState extends State<SignupScreen> {
                     const SizedBox(height: 20),
                     TextFormField(
                       controller: _passwordController,
-                      decoration: const InputDecoration(labelText: 'Password', prefixIcon: Icon(Icons.lock)),
-                      obscureText: true,
+                      decoration: InputDecoration(
+                        labelText: 'Password',
+                        prefixIcon: const Icon(Icons.lock),
+                        suffixIcon: IconButton(
+                          icon: Icon(_obscurePassword ? Icons.visibility_off : Icons.visibility),
+                          onPressed: () {
+                            setState(() {
+                              _obscurePassword = !_obscurePassword;
+                            });
+                          },
+                        ),
+                      ),
+                      obscureText: _obscurePassword,
                       validator: (value) {
                         if (value == null || value.isEmpty) return 'Please enter your password';
                         if (value.length < 6) return 'Password must be at least 6 characters';
@@ -201,8 +214,19 @@ class _SignupScreenState extends State<SignupScreen> {
                     const SizedBox(height: 20),
                     TextFormField(
                       controller: _confirmPasswordController,
-                      decoration: const InputDecoration(labelText: 'Confirm Password', prefixIcon: Icon(Icons.lock_outline)),
-                      obscureText: true,
+                      decoration: InputDecoration(
+                        labelText: 'Confirm Password',
+                        prefixIcon: const Icon(Icons.lock_outline),
+                        suffixIcon: IconButton(
+                          icon: Icon(_obscureConfirmPassword ? Icons.visibility_off : Icons.visibility),
+                          onPressed: () {
+                            setState(() {
+                              _obscureConfirmPassword = !_obscureConfirmPassword;
+                            });
+                          },
+                        ),
+                      ),
+                      obscureText: _obscureConfirmPassword,
                       validator: (value) {
                         if (value == null || value.isEmpty) return 'Please confirm your password';
                         return null;
