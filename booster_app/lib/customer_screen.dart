@@ -103,7 +103,11 @@ class _CustomerScreenState extends State<CustomerScreen> {
       final preferred = userDoc.data()?['preferredServiceType']?.toString();
       if (!mounted) return;
       setState(() {
-        _serviceType = preferred == _serviceTypeTow ? _serviceTypeTow : _serviceTypeBoost;
+        if (preferred == _serviceTypeTow || preferred == _serviceTypeMechanic) {
+          _serviceType = preferred!;
+        } else {
+          _serviceType = _serviceTypeBoost;
+        }
       });
     } catch (_) {
       // Default to boost flow when profile service preference cannot be read.
@@ -423,7 +427,12 @@ class _CustomerScreenState extends State<CustomerScreen> {
 
   Future<void> _confirmTowPaymentAndPlaceRequest() async {
     if (_selectedTowReason == null || _selectedTowReason!.isEmpty) {
-      _showErrorSnackBar('Select a tow reason before requesting', Icons.list_alt);
+      _showErrorSnackBar(
+        _serviceType == _serviceTypeMechanic
+            ? 'Select an issue type before requesting'
+            : 'Select a tow reason before requesting',
+        Icons.list_alt,
+      );
       return;
     }
 
@@ -433,7 +442,12 @@ class _CustomerScreenState extends State<CustomerScreen> {
     }
 
     if (_nearbyBoosters.isEmpty) {
-      _showErrorSnackBar('No tow providers found nearby yet', Icons.search_off);
+      _showErrorSnackBar(
+        _serviceType == _serviceTypeMechanic
+            ? 'No mobile mechanics found nearby yet'
+            : 'No tow providers found nearby yet',
+        Icons.search_off,
+      );
       return;
     }
 
@@ -442,7 +456,12 @@ class _CustomerScreenState extends State<CustomerScreen> {
 
     final proceed = await Navigator.of(context).push<bool>(
       MaterialPageRoute(
-        builder: (_) => _TowPaymentConfirmScreen(pricing: pricing),
+        builder: (_) => _TowPaymentConfirmScreen(
+          pricing: pricing,
+          serviceLabel: _serviceType == _serviceTypeMechanic
+              ? 'Mobile mechanic service'
+              : 'Tow service',
+        ),
       ),
     );
 
@@ -460,7 +479,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
       final requestRef = await FirebaseFirestore.instance.collection('requests').add({
         'customerId': user.uid,
         'driverId': nearestProvider.userId,
-        'serviceType': _serviceTypeTow,
+        'serviceType': _serviceType,
         'status': 'pending',
         'pickupAddress': _pickupAddress,
         'pickupLatitude': _pickupLatLng!.latitude,
@@ -491,17 +510,24 @@ class _CustomerScreenState extends State<CustomerScreen> {
         _activeRequestId = requestRef.id;
         _activeRequestStatus = 'pending';
         _activeDriverId = nearestProvider.userId;
-        _activeServiceType = _serviceTypeTow;
+        _activeServiceType = _serviceType;
         _towStep = 4;
         _flowStep = 4;
       });
 
       _showSuccessSnackBar(
-        'Tow request sent to nearest provider. Waiting for acceptance...',
+        _serviceType == _serviceTypeMechanic
+            ? 'Mobile mechanic request sent to nearest provider. Waiting for acceptance...'
+            : 'Tow request sent to nearest provider. Waiting for acceptance...',
       );
     } catch (_) {
       if (!mounted) return;
-      _showErrorSnackBar('Could not place tow request. Please try again.', Icons.cloud_off);
+      _showErrorSnackBar(
+        _serviceType == _serviceTypeMechanic
+            ? 'Could not place mobile mechanic request. Please try again.'
+            : 'Could not place tow request. Please try again.',
+        Icons.cloud_off,
+      );
     }
   }
 
@@ -1015,7 +1041,9 @@ class _CustomerScreenState extends State<CustomerScreen> {
       appBar: AppBar(
         title: Text(
           _serviceType == _serviceTypeTow
-              ? 'Tow Assistance'
+            ? 'Tow Assistance'
+            : _serviceType == _serviceTypeMechanic
+              ? 'Mobile Mechanic Assistance'
               : 'Battery Boost Assistance',
         ),
         actions: [
@@ -1035,7 +1063,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
       ),
       body: hasActiveOrder
           ? _buildBoostStep4(context)
-          : (_serviceType == _serviceTypeTow
+          : (_serviceType == _serviceTypeTow || _serviceType == _serviceTypeMechanic)
               ? _buildTowFlow(context)
               : _buildBoostFlow(context)),
     );
@@ -1602,6 +1630,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
     final status = _activeRequestStatus ?? 'pending';
     final activeService = _activeServiceType ?? _serviceType;
     final isTowOrder = activeService == _serviceTypeTow;
+    final isMechanicOrder = activeService == _serviceTypeMechanic;
     final hasProvider = _activeDriverId != null &&
         (status == 'accepted' || status == 'en_route' || status == 'paid' || status == 'completed');
     final isCompleted = status == 'completed';
@@ -1734,7 +1763,11 @@ class _CustomerScreenState extends State<CustomerScreen> {
         automaticallyImplyLeading: false,
         title: Text(
           _showTrackingMap
-              ? (isTowOrder ? 'Tow Tracking Map' : 'Provider Tracking Map')
+              ? (isTowOrder
+                  ? 'Tow Tracking Map'
+                  : isMechanicOrder
+                      ? 'Mechanic Tracking Map'
+                      : 'Provider Tracking Map')
               : 'Requests',
           style: const TextStyle(fontWeight: FontWeight.w700),
         ),
@@ -1758,7 +1791,11 @@ class _CustomerScreenState extends State<CustomerScreen> {
                         position: LatLng(_providerLat!, _providerLng!),
                         infoWindow: InfoWindow(
                             title: _providerDisplayName ??
-                                (isTowOrder ? 'Tow Operator' : 'Provider')),
+                            (isTowOrder
+                              ? 'Tow Operator'
+                              : isMechanicOrder
+                                ? 'Mobile Mechanic'
+                                : 'Provider')),
                         icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueGreen),
                       ),
                   },
@@ -1786,10 +1823,11 @@ class _CustomerScreenState extends State<CustomerScreen> {
                       Text('Request ID: ${_activeRequestId ?? 'Pending'}',
                           style: const TextStyle(color: Color(0xFF4B5563))),
                       const SizedBox(height: 4),
-                        Text('Service: ${isTowOrder ? 'Tow Assistance' : 'Battery Boost'}',
+                          Text(
+                            'Service: ${isTowOrder ? 'Tow Assistance' : isMechanicOrder ? 'Mobile Mechanic' : 'Battery Boost'}',
                           style: const TextStyle(color: Color(0xFF4B5563))),
                       const SizedBox(height: 4),
-                      Text('Status: ${_statusLabel(status)}',
+                        Text('Status: ${_statusLabel(status, serviceType: activeService)}',
                           style: const TextStyle(color: Color(0xFF4B5563))),
                     ],
                   ),
@@ -1807,7 +1845,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
                       Icon(_statusIcon(status), color: _statusColor(status), size: 22),
                       const SizedBox(width: 10),
                       Flexible(
-                        child: Text(_statusLabel(status),
+                        child: Text(_statusLabel(status, serviceType: activeService),
                             style: TextStyle(
                                 color: _statusColor(status),
                                 fontWeight: FontWeight.w700,
@@ -1849,9 +1887,12 @@ class _CustomerScreenState extends State<CustomerScreen> {
                                 children: [
                                   Text(_providerDisplayName!,
                                       style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
-                                    Text(isTowOrder
-                                      ? 'Verified Tow Operator'
-                                      : 'Certified Battery Boost Provider',
+                                      Text(
+                                        isTowOrder
+                                          ? 'Verified Tow Operator'
+                                          : isMechanicOrder
+                                            ? 'Verified Mobile Mechanic'
+                                            : 'Certified Battery Boost Provider',
                                       style: TextStyle(color: Colors.grey[600], fontSize: 13)),
                                 ],
                               ),
@@ -1952,7 +1993,12 @@ class _CustomerScreenState extends State<CustomerScreen> {
                       children: [
                         const Icon(Icons.check_circle, color: Color(0xFF16A34A), size: 48),
                         const SizedBox(height: 12),
-                        Text(isTowOrder ? 'Tow Complete!' : 'Boost Complete!',
+                        Text(
+                            isTowOrder
+                                ? 'Tow Complete!'
+                                : isMechanicOrder
+                                    ? 'Mechanic Service Complete!'
+                                    : 'Boost Complete!',
                           style: const TextStyle(
                             fontSize: 20,
                             fontWeight: FontWeight.w800,
@@ -1961,6 +2007,8 @@ class _CustomerScreenState extends State<CustomerScreen> {
                         Text(
                           isTowOrder
                             ? 'Your tow order is complete. Thanks for using Boosstter!'
+                            : isMechanicOrder
+                                ? 'Your mobile mechanic service is complete. Thanks for using Boosstter!'
                             : 'Your battery has been boosted. Thanks for using Boosstter!',
                           textAlign: TextAlign.center,
                           style: const TextStyle(color: Color(0xFF166534))),
@@ -2024,7 +2072,9 @@ class _CustomerScreenState extends State<CustomerScreen> {
     }
   }
 
-  String _statusLabel(String status) {
+  String _statusLabel(String status, {String? serviceType}) {
+    final isTow = serviceType == _serviceTypeTow;
+    final isMechanic = serviceType == _serviceTypeMechanic;
     switch (status) {
       case 'pending':
         return 'Searching for providers…';
@@ -2033,19 +2083,36 @@ class _CustomerScreenState extends State<CustomerScreen> {
       case 'paid':
         return 'Payment Received – Provider Confirmed';
       case 'accepted':
-        return 'Provider Accepted – On the Way';
+        return isTow
+            ? 'Tow Operator Accepted – On the Way'
+            : isMechanic
+                ? 'Mechanic Accepted – On the Way'
+                : 'Provider Accepted – On the Way';
       case 'en_route':
-        return 'Provider En Route to You';
+        return isTow
+            ? 'Tow Operator En Route to You'
+            : isMechanic
+                ? 'Mechanic En Route to You'
+                : 'Provider En Route to You';
       case 'completed':
-        return 'Boost Completed Successfully';
+        return isTow
+            ? 'Tow Completed Successfully'
+            : isMechanic
+                ? 'Mechanic Service Completed Successfully'
+                : 'Boost Completed Successfully';
       default:
         return status;
     }
   }
 
   Widget _buildTowFlow(BuildContext context) {
+    final isMechanic = _serviceType == _serviceTypeMechanic;
     final selectedTowVehicle = _resolvedTowVehicle ?? _towVehicleOptions.first;
     final estimatedTowAmount = _estimateTowPrice(selectedTowVehicle);
+    final stepOneTitle = isMechanic ? 'Choose Service Type' : 'Choose Tow Type';
+    final stepThreeTitle = isMechanic ? 'Request Mobile Mechanic' : 'Request Tow';
+    final submittedTitle = isMechanic ? 'Mechanic Request Submitted' : 'Tow Request Submitted';
+    final reasons = isMechanic ? _mechanicReasons : _towReasons;
 
     return Container(
       color: const Color(0xFFF3F3F7),
@@ -2095,12 +2162,12 @@ class _CustomerScreenState extends State<CustomerScreen> {
                           children: [
                             Text(
                               _towStep == 1
-                                ? 'Choose Tow Type'
+                                ? stepOneTitle
                                 : _towStep == 2
                                   ? 'Set Your Location'
                                   : _towStep == 3
-                                    ? 'Request Tow'
-                                    : 'Tow Request Submitted',
+                                    ? stepThreeTitle
+                                    : submittedTitle,
                               style: Theme.of(context)
                                   .textTheme
                                   .headlineSmall
@@ -2109,11 +2176,15 @@ class _CustomerScreenState extends State<CustomerScreen> {
                             const SizedBox(height: 4),
                             Text(
                               _towStep == 1
-                                  ? 'Pick the tow service that matches your vehicle before we search.'
+                                  ? (isMechanic
+                                      ? 'Pick the mechanic service that matches your issue before we search.'
+                                      : 'Pick the tow service that matches your vehicle before we search.')
                                 : _towStep == 2
                                   ? 'Save your current location or enter a different address.'
                                   : _towStep == 3
-                                    ? 'Review your tow request and start finding nearby available providers.'
+                                    ? (isMechanic
+                                        ? 'Review your mobile mechanic request and start finding nearby available providers.'
+                                        : 'Review your tow request and start finding nearby available providers.')
                                     : 'Waiting for provider acceptance and dispatch updates.',
                               style: Theme.of(context)
                                   .textTheme
@@ -2133,7 +2204,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
             const SizedBox(height: 18),
             if (_towStep == 1) ...[
               Text(
-                'Select Your Vehicle Type',
+                isMechanic ? 'Select Your Vehicle / Issue Type' : 'Select Your Vehicle Type',
                 style: Theme.of(context)
                     .textTheme
                     .headlineSmall
@@ -2402,7 +2473,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
                           const SizedBox(width: 8),
                           Expanded(
                             child: Text(
-                              _vehicleType ?? _resolvedTowVehicle ?? 'Tow vehicle',
+                              _vehicleType ?? _resolvedTowVehicle ?? (isMechanic ? 'Service vehicle' : 'Tow vehicle'),
                               style: Theme.of(context).textTheme.bodyLarge,
                             ),
                           ),
@@ -2431,7 +2502,9 @@ class _CustomerScreenState extends State<CustomerScreen> {
                       ),
                       const SizedBox(height: 8),
                       Text(
-                        'We will search for tow providers currently available near your saved location.',
+                        isMechanic
+                            ? 'We will search for mobile mechanics currently available near your saved location.'
+                            : 'We will search for tow providers currently available near your saved location.',
                         style: Theme.of(context)
                             .textTheme
                             .bodyLarge
@@ -2440,7 +2513,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
                       const SizedBox(height: 12),
                       DropdownButtonFormField<String>(
                         value: _selectedTowReason,
-                        items: _towReasons
+                        items: reasons
                             .map((reason) => DropdownMenuItem<String>(
                                   value: reason,
                                   child: Text(reason),
@@ -2450,7 +2523,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
                           setState(() => _selectedTowReason = value);
                         },
                         decoration: const InputDecoration(
-                          hintText: 'Reason for tow',
+                          hintText: 'Reason for service',
                         ),
                       ),
                       const SizedBox(height: 10),
@@ -2477,7 +2550,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
                             padding: const EdgeInsets.symmetric(vertical: 16),
                           ),
                           child: Text(
-                            'Request Tow • Pay \$${_estimateTowPrice(_vehicleType ?? _resolvedTowVehicle ?? _towVehicleOptions.first)}',
+                            '${isMechanic ? 'Request Mobile Mechanic' : 'Request Tow'} • Pay \$${_estimateTowPrice(_vehicleType ?? _resolvedTowVehicle ?? _towVehicleOptions.first)}',
                             style: const TextStyle(
                               fontSize: 18,
                               fontWeight: FontWeight.w700,
@@ -2497,8 +2570,10 @@ class _CustomerScreenState extends State<CustomerScreen> {
                 else
                   Text(
                     _nearbyBoosters.isEmpty
-                        ? 'No nearby tow providers found yet. Update location and try again.'
-                        : '${_nearbyBoosters.length} nearby tow providers found. Nearest ETA ${_nearbyBoosters.first.etaMinutes} min.',
+                      ? (isMechanic
+                        ? 'No nearby mobile mechanics found yet. Update location and try again.'
+                        : 'No nearby tow providers found yet. Update location and try again.')
+                      : '${_nearbyBoosters.length} nearby ${isMechanic ? 'mobile mechanics' : 'tow providers'} found. Nearest ETA ${_nearbyBoosters.first.etaMinutes} min.',
                     style: Theme.of(context)
                         .textTheme
                         .bodyLarge
@@ -2715,9 +2790,10 @@ class _TowPricing {
 }
 
 class _TowPaymentConfirmScreen extends StatelessWidget {
-  const _TowPaymentConfirmScreen({required this.pricing});
+  const _TowPaymentConfirmScreen({required this.pricing, required this.serviceLabel});
 
   final _TowPricing pricing;
+  final String serviceLabel;
 
   String _toCad(int cents) => (cents / 100).toStringAsFixed(2);
 
@@ -2771,7 +2847,7 @@ class _TowPaymentConfirmScreen extends StatelessWidget {
               ),
               child: Column(
                 children: [
-                  _PaymentLine(label: 'Tow service', value: '\$${_toCad(pricing.serviceCents)}'),
+                  _PaymentLine(label: serviceLabel, value: '\$${_toCad(pricing.serviceCents)}'),
                   if (pricing.subscriptionCents > 0)
                     _PaymentLine(
                       label: 'Yearly subscription (first-time user)',
@@ -3713,6 +3789,7 @@ class _PickupSelectorSheetState extends State<_PickupSelectorSheet> {
 
 const String _serviceTypeBoost = 'boost';
 const String _serviceTypeTow = 'tow';
+const String _serviceTypeMechanic = 'mobile_mechanic';
 const int _towBaseCadCents = 2000;
 const int _firstUseYearlySubscriptionCadCents = 900;
 const double _canadianTaxRate = 0.13;
@@ -3735,6 +3812,16 @@ const List<String> _towReasons = <String>[
   'Vehicle won\'t start',
   'Vehicle stuck',
   'Other',
+];
+
+const List<String> _mechanicReasons = <String>[
+  'Engine check / warning light',
+  'Battery / alternator diagnosis',
+  'Brake issue inspection',
+  'Overheating issue',
+  'Starter / ignition problem',
+  'Fluid leak check',
+  'Other mechanical issue',
 ];
 const List<String> _plugTypes = <String>[
   'J1772 Type 1',

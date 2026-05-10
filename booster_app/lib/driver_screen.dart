@@ -315,13 +315,16 @@ class _DriverScreenState extends State<DriverScreen> {
               ),
               const SizedBox(height: 4),
               Text(
-                'Service: ${_activeServiceType == 'tow' ? 'Tow Assistance' : 'Battery Boost'}',
+                'Service: ${_activeServiceType == 'tow' ? 'Tow Assistance' : _activeServiceType == 'mobile_mechanic' ? 'Mobile Mechanic' : 'Battery Boost'}',
                 style: const TextStyle(color: Colors.white70, fontSize: 13),
               ),
-              if (_activeServiceType == 'tow' && _activeTowReason != null) ...[
+              if ((_activeServiceType == 'tow' || _activeServiceType == 'mobile_mechanic') &&
+                  _activeTowReason != null) ...[
                 const SizedBox(height: 4),
                 Text(
-                  'Tow Reason: $_activeTowReason',
+                  _activeServiceType == 'mobile_mechanic'
+                      ? 'Issue Type: $_activeTowReason'
+                      : 'Tow Reason: $_activeTowReason',
                   style: const TextStyle(color: Colors.white70, fontSize: 13),
                 ),
               ],
@@ -439,6 +442,7 @@ class _DriverScreenState extends State<DriverScreen> {
   Widget _buildActiveJobCard() {
     final status = _activeRequestStatus ?? 'pending';
     final isTowOrder = _activeServiceType == 'tow';
+    final isMechanicOrder = _activeServiceType == 'mobile_mechanic';
     final Color statusColor;
     final IconData statusIcon;
     final String statusLabel;
@@ -449,7 +453,11 @@ class _DriverScreenState extends State<DriverScreen> {
       case 'pending':
         statusColor = const Color(0xFFF59E0B);
         statusIcon = Icons.hourglass_top;
-        statusLabel = isTowOrder ? 'New Tow Request' : 'New Boost Request';
+        statusLabel = isTowOrder
+            ? 'New Tow Request'
+            : isMechanicOrder
+                ? 'New Mechanic Request'
+                : 'New Boost Request';
         actionLabel = 'Accept Request';
         nextStatus = 'awaiting_payment';
         break;
@@ -465,6 +473,8 @@ class _DriverScreenState extends State<DriverScreen> {
         statusIcon = Icons.check_circle;
         statusLabel = isTowOrder
             ? 'Payment Received — Dispatch Tow Truck'
+          : isMechanicOrder
+            ? 'Payment Received — Drive to Customer'
             : 'Payment Received — Head to Customer';
         actionLabel = "I'm En Route";
         nextStatus = 'en_route';
@@ -478,8 +488,16 @@ class _DriverScreenState extends State<DriverScreen> {
         break;
       case 'en_route':
         statusColor = const Color(0xFF22D3EE);
-        statusIcon = isTowOrder ? Icons.local_shipping : Icons.electric_bolt;
-        statusLabel = isTowOrder ? 'En Route — Towing in Progress' : 'En Route — Boosting Now';
+        statusIcon = isTowOrder
+          ? Icons.local_shipping
+          : isMechanicOrder
+            ? Icons.build_circle
+            : Icons.electric_bolt;
+        statusLabel = isTowOrder
+          ? 'En Route — Towing in Progress'
+          : isMechanicOrder
+            ? 'En Route — Mechanical Service'
+            : 'En Route — Boosting Now';
         actionLabel = 'Mark Completed';
         nextStatus = 'completed';
         break;
@@ -554,6 +572,8 @@ class _DriverScreenState extends State<DriverScreen> {
                       Icon(
                         isTowOrder
                             ? Icons.local_shipping
+                          : isMechanicOrder
+                            ? Icons.build
                             : (_activeVehicleType == 'electric'
                                 ? Icons.ev_station
                                 : Icons.directions_car),
@@ -565,6 +585,8 @@ class _DriverScreenState extends State<DriverScreen> {
                         child: Text(
                           isTowOrder
                               ? 'Tow service${_activeTowReason == null ? '' : ' • $_activeTowReason'}'
+                            : isMechanicOrder
+                              ? 'Mechanic service${_activeTowReason == null ? '' : ' • $_activeTowReason'}'
                               : (_activeVehicleType == 'electric'
                                   ? 'Electric vehicle${_activePlugType == null ? '' : ' • $_activePlugType'}'
                                   : 'Regular vehicle'),
@@ -709,7 +731,12 @@ class _DriverScreenState extends State<DriverScreen> {
                     children: [
                       const Icon(Icons.person, color: Color(0xFF6366F1), size: 18),
                       const SizedBox(width: 8),
-                        Text(serviceType == 'tow' ? 'Tow Request' : 'Boost Request',
+                        Text(
+                          serviceType == 'tow'
+                            ? 'Tow Request'
+                            : serviceType == 'mobile_mechanic'
+                              ? 'Mechanic Request'
+                              : 'Boost Request',
                           style: const TextStyle(
                               color: Colors.white,
                               fontWeight: FontWeight.bold,
@@ -742,6 +769,8 @@ class _DriverScreenState extends State<DriverScreen> {
                         Icon(
                           serviceType == 'tow'
                               ? Icons.local_shipping
+                              : serviceType == 'mobile_mechanic'
+                                ? Icons.build
                               : (vehicleType == 'electric'
                                   ? Icons.ev_station
                                   : Icons.directions_car),
@@ -753,6 +782,8 @@ class _DriverScreenState extends State<DriverScreen> {
                           child: Text(
                             serviceType == 'tow'
                                 ? 'Tow${towReason == null ? '' : ' • $towReason'}'
+                              : serviceType == 'mobile_mechanic'
+                                ? 'Mechanic${towReason == null ? '' : ' • $towReason'}'
                                 : (vehicleType == 'electric'
                                     ? 'Electric${plugType == null ? '' : ' • $plugType'}'
                                     : 'Regular'),
