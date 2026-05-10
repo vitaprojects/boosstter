@@ -1027,8 +1027,16 @@ class _CustomerScreenState extends State<CustomerScreen> {
   }
 
   Widget _buildBoostFlow(BuildContext context) {
+    final hasActiveBoostRequest = _activeRequestId != null ||
+        _isWaitingForBooster ||
+        _activeRequestStatus == 'awaiting_payment' ||
+        _activeRequestStatus == 'paid' ||
+        _activeRequestStatus == 'accepted' ||
+        _activeRequestStatus == 'en_route' ||
+        _activeRequestStatus == 'completed';
+
     // ── Step 4: Tracking ──────────────────────────────────────────────────
-    if (_flowStep == 4) {
+    if (_flowStep == 4 || hasActiveBoostRequest) {
       return _buildBoostStep4(context);
     }
 
