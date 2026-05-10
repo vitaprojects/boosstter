@@ -16,6 +16,7 @@ class _DriverScreenState extends State<DriverScreen> {
   bool _isAvailable = false;
   Timer? _locationTimer;
   Position? _currentPosition;
+  int _providerTabIndex = 0; // 0=Order, 1=Requests
 
   // Active job state
   String? _activeRequestId;
@@ -220,8 +221,10 @@ class _DriverScreenState extends State<DriverScreen> {
       backgroundColor: const Color(0xFF0F172A),
       appBar: AppBar(
         backgroundColor: const Color(0xFF1E293B),
-        title: const Text('Give a Boost',
-            style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+        title: Text(
+          _providerTabIndex == 0 ? 'Order' : 'Requests',
+          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+        ),
         iconTheme: const IconThemeData(color: Colors.white),
         actions: [
           IconButton(
@@ -248,29 +251,110 @@ class _DriverScreenState extends State<DriverScreen> {
           ),
         ],
       ),
-      body: ListView(
-        padding: const EdgeInsets.all(20),
-        children: [
-          _buildAvailabilityCard(),
-          const SizedBox(height: 24),
-          if (_hasActiveJob) ...[
-            _buildActiveJobCard(),
-            const SizedBox(height: 24),
-          ],
-          if (!_hasActiveJob) ...[
-            Text(
-              _isAvailable ? 'Incoming Requests' : 'Go Available to See Requests',
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 18,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-            const SizedBox(height: 12),
-            if (_isAvailable) _buildIncomingRequestsList(),
-          ],
+      body: _providerTabIndex == 0 ? _buildOrderPage() : _buildRequestsPage(),
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: _providerTabIndex,
+        onDestinationSelected: (index) {
+          setState(() => _providerTabIndex = index);
+        },
+        destinations: const [
+          NavigationDestination(
+            icon: Icon(Icons.receipt_long_outlined),
+            selectedIcon: Icon(Icons.receipt_long),
+            label: 'Order',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.inbox_outlined),
+            selectedIcon: Icon(Icons.inbox),
+            label: 'Requests',
+          ),
         ],
       ),
+    );
+  }
+
+  Widget _buildOrderPage() {
+    return ListView(
+      padding: const EdgeInsets.all(20),
+      children: [
+        _buildAvailabilityCard(),
+        const SizedBox(height: 16),
+        Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: const Color(0xFF111827),
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: Colors.white12),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Transaction Summary',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.w800,
+                  fontSize: 15,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Order ID: ${_activeRequestId ?? 'No active order'}',
+                style: const TextStyle(color: Colors.white70, fontSize: 13),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                'Status: ${_activeRequestStatus ?? 'idle'}',
+                style: const TextStyle(color: Colors.white70, fontSize: 13),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                'Service: Battery Boost',
+                style: const TextStyle(color: Colors.white70, fontSize: 13),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 20),
+        if (_hasActiveJob) ...[
+          _buildActiveJobCard(),
+        ] else ...[
+          Container(
+            padding: const EdgeInsets.all(20),
+            decoration: BoxDecoration(
+              color: const Color(0xFF1E293B),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: Colors.white12),
+            ),
+            child: Text(
+              _isAvailable
+                  ? 'No active orders right now. Keep Requests tab open to catch new jobs quickly.'
+                  : 'Go available to start receiving new orders.',
+              style: const TextStyle(color: Colors.white70),
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildRequestsPage() {
+    return ListView(
+      padding: const EdgeInsets.all(20),
+      children: [
+        _buildAvailabilityCard(),
+        const SizedBox(height: 20),
+        Text(
+          _isAvailable ? 'Incoming Requests' : 'Go Available to See Requests',
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 18,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        const SizedBox(height: 12),
+        if (_isAvailable) _buildIncomingRequestsList(),
+      ],
     );
   }
 

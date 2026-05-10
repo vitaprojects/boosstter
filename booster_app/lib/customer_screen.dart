@@ -1711,33 +1711,68 @@ class _CustomerScreenState extends State<CustomerScreen> {
     }
 
     // ── Provider accepted / tracking / completed ─────────────────────────────
-    return DefaultTabController(
-      length: 2,
-      child: Scaffold(
-        backgroundColor: const Color(0xFFF3F3F7),
-        appBar: AppBar(
-          automaticallyImplyLeading: false,
-          title: Text(
-            isCompleted ? '✅ Boost Complete' : '⚡ Provider Found',
-            style: const TextStyle(fontWeight: FontWeight.w700),
-          ),
-          bottom: const TabBar(
-            indicatorColor: Color(0xFF5500FF),
-            labelColor: Color(0xFF5500FF),
-            unselectedLabelColor: Colors.grey,
-            tabs: [
-              Tab(icon: Icon(Icons.info_outline), text: 'Details'),
-              Tab(icon: Icon(Icons.map_outlined), text: 'Track on Map'),
-            ],
-          ),
+    return Scaffold(
+      backgroundColor: const Color(0xFFF3F3F7),
+      appBar: AppBar(
+        automaticallyImplyLeading: false,
+        title: Text(
+          _showTrackingMap ? 'Provider Tracking Map' : 'Requests',
+          style: const TextStyle(fontWeight: FontWeight.w700),
         ),
-        body: TabBarView(
-          children: [
-            // Details tab
-            ListView(
+      ),
+      body: _showTrackingMap
+          ? (_pickupLatLng == null
+              ? const Center(child: Text('Location unavailable'))
+              : GoogleMap(
+                  initialCameraPosition: CameraPosition(target: _pickupLatLng!, zoom: 14),
+                  onMapCreated: (c) => _mapController = c,
+                  markers: {
+                    Marker(
+                      markerId: const MarkerId('customer'),
+                      position: _pickupLatLng!,
+                      infoWindow: const InfoWindow(title: 'Your Location'),
+                      icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueBlue),
+                    ),
+                    if (_providerLat != null && _providerLng != null)
+                      Marker(
+                        markerId: const MarkerId('provider'),
+                        position: LatLng(_providerLat!, _providerLng!),
+                        infoWindow: InfoWindow(title: _providerDisplayName ?? 'Provider'),
+                        icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueGreen),
+                      ),
+                  },
+                  myLocationEnabled: true,
+                  myLocationButtonEnabled: true,
+                ))
+          : ListView(
               padding: const EdgeInsets.fromLTRB(18, 14, 18, 24),
               children: [
                 _StepProgressRow(activeStep: 4, totalSteps: 4),
+                const SizedBox(height: 16),
+                Container(
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(color: const Color(0xFFE1E2EA)),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('Transaction',
+                          style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16)),
+                      const SizedBox(height: 8),
+                      Text('Request ID: ${_activeRequestId ?? 'Pending'}',
+                          style: const TextStyle(color: Color(0xFF4B5563))),
+                      const SizedBox(height: 4),
+                      Text('Service: ${_serviceType == _serviceTypeTow ? 'Tow Assistance' : 'Battery Boost'}',
+                          style: const TextStyle(color: Color(0xFF4B5563))),
+                      const SizedBox(height: 4),
+                      Text('Status: ${_statusLabel(status)}',
+                          style: const TextStyle(color: Color(0xFF4B5563))),
+                    ],
+                  ),
+                ),
                 const SizedBox(height: 16),
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
@@ -1750,9 +1785,13 @@ class _CustomerScreenState extends State<CustomerScreen> {
                     children: [
                       Icon(_statusIcon(status), color: _statusColor(status), size: 22),
                       const SizedBox(width: 10),
-                      Flexible(child: Text(_statusLabel(status),
-                          style: TextStyle(color: _statusColor(status),
-                              fontWeight: FontWeight.w700, fontSize: 15))),
+                      Flexible(
+                        child: Text(_statusLabel(status),
+                            style: TextStyle(
+                                color: _statusColor(status),
+                                fontWeight: FontWeight.w700,
+                                fontSize: 15)),
+                      ),
                     ],
                   ),
                 ),
@@ -1764,7 +1803,9 @@ class _CustomerScreenState extends State<CustomerScreen> {
                       color: Colors.white,
                       borderRadius: BorderRadius.circular(18),
                       border: Border.all(color: const Color(0xFFE1E2EA)),
-                      boxShadow: const [BoxShadow(color: Color(0x0D000000), blurRadius: 10, offset: Offset(0, 2))],
+                      boxShadow: const [
+                        BoxShadow(color: Color(0x0D000000), blurRadius: 10, offset: Offset(0, 2))
+                      ],
                     ),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1772,7 +1813,8 @@ class _CustomerScreenState extends State<CustomerScreen> {
                         Row(
                           children: [
                             Container(
-                              width: 52, height: 52,
+                              width: 52,
+                              height: 52,
                               decoration: BoxDecoration(
                                 color: const Color(0xFFEDE9FE),
                                 borderRadius: BorderRadius.circular(16),
@@ -1799,14 +1841,18 @@ class _CustomerScreenState extends State<CustomerScreen> {
                           const SizedBox(height: 16),
                           Row(
                             children: [
-                              Expanded(child: _InfoTile(
-                                icon: Icons.straighten, label: 'Distance',
+                              Expanded(
+                                  child: _InfoTile(
+                                icon: Icons.straighten,
+                                label: 'Distance',
                                 value: '${_providerDistanceKm!.toStringAsFixed(1)} km  /  '
                                     '${(_providerDistanceKm! * 0.621371).toStringAsFixed(1)} mi',
                               )),
                               const SizedBox(width: 12),
-                              Expanded(child: _InfoTile(
-                                icon: Icons.schedule, label: 'ETA',
+                              Expanded(
+                                  child: _InfoTile(
+                                icon: Icons.schedule,
+                                label: 'ETA',
                                 value: '${_providerEtaMinutes ?? '–'} min',
                               )),
                             ],
@@ -1827,8 +1873,10 @@ class _CustomerScreenState extends State<CustomerScreen> {
                     children: [
                       const Icon(Icons.place, color: Color(0xFF6366F1)),
                       const SizedBox(width: 12),
-                      Expanded(child: Text(_pickupAddress ?? 'Your Location',
-                          style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500))),
+                      Expanded(
+                        child: Text(_pickupAddress ?? 'Your Location',
+                            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500)),
+                      ),
                     ],
                   ),
                 ),
@@ -1842,7 +1890,8 @@ class _CustomerScreenState extends State<CustomerScreen> {
                           style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700)),
                       onPressed: () => _showPaymentSheet(_activeRequestId!),
                       style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFF16A34A), foregroundColor: Colors.white,
+                        backgroundColor: const Color(0xFF16A34A),
+                        foregroundColor: Colors.white,
                         padding: const EdgeInsets.symmetric(vertical: 16),
                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                       ),
@@ -1853,14 +1902,17 @@ class _CustomerScreenState extends State<CustomerScreen> {
                     width: double.infinity,
                     child: ElevatedButton.icon(
                       icon: _isCompletingJob
-                          ? const SizedBox(width: 20, height: 20,
+                          ? const SizedBox(
+                              width: 20,
+                              height: 20,
                               child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
                           : const Icon(Icons.check_circle_outline),
                       label: const Text('Mark Job as Complete',
                           style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700)),
                       onPressed: _isCompletingJob ? null : _markJobComplete,
                       style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFF5500FF), foregroundColor: Colors.white,
+                        backgroundColor: const Color(0xFF5500FF),
+                        foregroundColor: Colors.white,
                         padding: const EdgeInsets.symmetric(vertical: 16),
                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                       ),
@@ -1877,8 +1929,11 @@ class _CustomerScreenState extends State<CustomerScreen> {
                       children: [
                         const Icon(Icons.check_circle, color: Color(0xFF16A34A), size: 48),
                         const SizedBox(height: 12),
-                        const Text('Boost Complete!', style: TextStyle(
-                          fontSize: 20, fontWeight: FontWeight.w800, color: Color(0xFF15803D))),
+                        const Text('Boost Complete!',
+                            style: TextStyle(
+                                fontSize: 20,
+                                fontWeight: FontWeight.w800,
+                                color: Color(0xFF15803D))),
                         const SizedBox(height: 6),
                         const Text('Your battery has been boosted. Thanks for using Boosstter!',
                             textAlign: TextAlign.center,
@@ -1887,7 +1942,8 @@ class _CustomerScreenState extends State<CustomerScreen> {
                         ElevatedButton(
                           onPressed: () => _promptReview(_activeRequestId ?? ''),
                           style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFF16A34A), foregroundColor: Colors.white,
+                            backgroundColor: const Color(0xFF16A34A),
+                            foregroundColor: Colors.white,
                             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                           ),
                           child: const Text('Leave a Review'),
@@ -1897,33 +1953,15 @@ class _CustomerScreenState extends State<CustomerScreen> {
                   ),
               ],
             ),
-
-            // Map tab
-            _pickupLatLng == null
-                ? const Center(child: Text('Location unavailable'))
-                : GoogleMap(
-                    initialCameraPosition: CameraPosition(target: _pickupLatLng!, zoom: 14),
-                    onMapCreated: (c) => _mapController = c,
-                    markers: {
-                      Marker(
-                        markerId: const MarkerId('customer'),
-                        position: _pickupLatLng!,
-                        infoWindow: const InfoWindow(title: 'Your Location'),
-                        icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueBlue),
-                      ),
-                      if (_providerLat != null && _providerLng != null)
-                        Marker(
-                          markerId: const MarkerId('provider'),
-                          position: LatLng(_providerLat!, _providerLng!),
-                          infoWindow: InfoWindow(title: _providerDisplayName ?? 'Provider'),
-                          icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueGreen),
-                        ),
-                    },
-                    myLocationEnabled: true,
-                    myLocationButtonEnabled: true,
-                  ),
-          ],
-        ),
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: _showTrackingMap ? 1 : 0,
+        onDestinationSelected: (index) {
+          setState(() => _showTrackingMap = index == 1);
+        },
+        destinations: const [
+          NavigationDestination(icon: Icon(Icons.receipt_long_outlined), label: 'Requests'),
+          NavigationDestination(icon: Icon(Icons.map_outlined), label: 'Tracking Map'),
+        ],
       ),
     );
   }
