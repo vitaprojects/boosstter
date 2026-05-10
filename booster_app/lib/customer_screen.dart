@@ -1073,16 +1073,17 @@ class _CustomerScreenState extends State<CustomerScreen> {
         _activeRequestStatus == 'accepted' ||
         _activeRequestStatus == 'en_route' ||
         _activeRequestStatus == 'completed';
-    final effectiveServiceType = hasActiveOrder
-        ? (_activeServiceType ?? _serviceType)
-        : _serviceType;
+    
+    // Only show tracking screen if active request matches selected service type
+    final showActiveOrderTracking = hasActiveOrder && 
+        (_activeServiceType == _serviceType);
 
     return Scaffold(
       appBar: AppBar(
         title: Text(
-          effectiveServiceType == _serviceTypeTow
+          _serviceType == _serviceTypeTow
             ? 'Tow Assistance'
-            : effectiveServiceType == _serviceTypeMechanic
+            : _serviceType == _serviceTypeMechanic
               ? 'Mobile Mechanic Assistance'
               : 'Battery Boost Assistance',
         ),
@@ -1101,9 +1102,9 @@ class _CustomerScreenState extends State<CustomerScreen> {
           ),
         ],
       ),
-      body: hasActiveOrder
+      body: showActiveOrderTracking
           ? _buildBoostStep4(context)
-          : (effectiveServiceType == _serviceTypeTow || effectiveServiceType == _serviceTypeMechanic)
+          : (_serviceType == _serviceTypeTow || _serviceType == _serviceTypeMechanic)
               ? _buildTowFlow(context)
               : _buildBoostFlow(context),
     );
@@ -1312,11 +1313,40 @@ class _CustomerScreenState extends State<CustomerScreen> {
     }
 
     // Steps 1 & 2: vehicle selection page
+    final hasActiveOtherRequest = _activeRequestId != null && 
+        _activeServiceType != _serviceTypeBoost;
+    
     return Container(
               color: const Color(0xFFF3F3F7),
               child: SafeArea(
                 child: Column(
                   children: [
+                    if (hasActiveOtherRequest)
+                      Container(
+                        margin: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFFEF3C7),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: const Color(0xFFFCD34D)),
+                        ),
+                        child: Row(
+                          children: [
+                            const Icon(Icons.info_outline, color: Color(0xFFA16207), size: 20),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Text(
+                                'Complete your active request before starting a new service.',
+                                style: const TextStyle(
+                                  color: Color(0xFF854D0E),
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
                     Expanded(
                       child: ListView(
                         padding: const EdgeInsets.fromLTRB(18, 14, 18, 14),
@@ -2275,6 +2305,8 @@ class _CustomerScreenState extends State<CustomerScreen> {
     final stepThreeTitle = isMechanic ? 'Request Mobile Mechanic' : 'Request Tow';
     final submittedTitle = isMechanic ? 'Mechanic Request Submitted' : 'Tow Request Submitted';
     final reasons = isMechanic ? _mechanicReasons : _towReasons;
+    final hasActiveOtherRequest = _activeRequestId != null && 
+        _activeServiceType != _serviceType;
 
     return Container(
       color: const Color(0xFFF3F3F7),
@@ -2282,6 +2314,32 @@ class _CustomerScreenState extends State<CustomerScreen> {
         child: ListView(
           padding: const EdgeInsets.fromLTRB(18, 14, 18, 14),
           children: [
+            if (hasActiveOtherRequest)
+              Container(
+                margin: const EdgeInsets.only(bottom: 12),
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFEF3C7),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: const Color(0xFFFCD34D)),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.info_outline, color: Color(0xFFA16207), size: 20),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        'Complete your active request before starting a new service.',
+                        style: const TextStyle(
+                          color: Color(0xFF854D0E),
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             Container(
               padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(
