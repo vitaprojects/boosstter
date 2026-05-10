@@ -64,6 +64,11 @@ class _CustomerScreenState extends State<CustomerScreen> {
   bool _isCompletingJob = false;
   bool _noProvidersFound = false;
 
+  // Search timeout tracking (30 minutes = 1800 seconds)
+  DateTime? _searchStartTime;
+  Timer? _searchTimeoutTimer;
+  bool _searchTimedOut = false;
+  int _resendAttempts = 0;
   bool get _isWaitingForBooster {
     return _activeRequestStatus == 'pending' ||
         _activeRequestStatus == 'awaiting_payment' ||
@@ -86,6 +91,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
     _towManualVehicleController.dispose();
     _towManualAddressController.dispose();
     _towNotesController.dispose();
+      _searchTimeoutTimer?.cancel();
     super.dispose();
   }
 
@@ -513,6 +519,16 @@ class _CustomerScreenState extends State<CustomerScreen> {
         _activeServiceType = _serviceType;
         _towStep = 4;
         _flowStep = 4;
+        _searchStartTime = DateTime.now();
+        _searchTimedOut = false;
+      });
+
+      // Setup 30-minute timeout timer
+      _searchTimeoutTimer?.cancel();
+      _searchTimeoutTimer = Timer(const Duration(minutes: 30), () {
+        if (mounted && _activeRequestStatus == 'pending') {
+          setState(() => _searchTimedOut = true);
+        }
       });
 
       _showSuccessSnackBar(
@@ -561,6 +577,17 @@ class _CustomerScreenState extends State<CustomerScreen> {
       _isSearchingBoosters = true;
       _flowStep = 4;
       _noProvidersFound = false;
+      _searchStartTime = DateTime.now();
+      _searchTimedOut = false;
+    
+        // Setup 30-minute timeout timer
+        _searchTimeoutTimer?.cancel();
+        _searchTimeoutTimer = Timer(const Duration(minutes: 30), () {
+          if (mounted && _isSearchingBoosters) {
+            setState(() => _searchTimedOut = true);
+          }
+        });
+    
     });
     await _searchNearbyBoosters();
     if (!mounted) return;
@@ -789,6 +816,16 @@ class _CustomerScreenState extends State<CustomerScreen> {
 
       // Auto-show payment sheet when booster accepts (fires once)
       if (prevStatus != 'awaiting_payment' && newStatus == 'awaiting_payment') {
+                // Provider found! Reset timeout
+                _searchTimeoutTimer?.cancel();
+                setState(() {
+                  _isSearchingBoosters = false;
+                    _searchTimedOut = false;
+                    _resendAttempts = 0;
+                    _searchStartTime = null;
+                    _searchTimeoutTimer?.cancel();
+                  _searchTimedOut = false;
+                });
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted) _showPaymentSheet(doc.id);
         });
@@ -797,6 +834,8 @@ class _CustomerScreenState extends State<CustomerScreen> {
       if ((newStatus == 'accepted' || newStatus == 'en_route') &&
           prevStatus != newStatus &&
           _activeDriverId != null) {
+          // Provider accepted! Reset timeout
+          _searchTimeoutTimer?.cancel();
         _notifyProviderEta(_activeDriverId!);
       }
 
@@ -1717,6 +1756,143 @@ class _CustomerScreenState extends State<CustomerScreen> {
 
     // ── Searching animation ──────────────────────────────────────────────────
     if (_isSearchingBoosters && !hasProvider) {
+            // Timeout state with Resend & Cancel buttons
+            if (_searchTimedOut && _resendAttempts > 0) {
+              return Container(
+                color: const Color(0xFFF3F3F7),
+                child: SafeArea(
+                  child: Center(
+                    child: Padding(
+                      padding: const EdgeInsets.all(32),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Container(
+                            width: 88, height: 88,
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFEDE9FE),
+                              borderRadius: BorderRadius.circular(28),
+                            ),
+                            child: const Icon(Icons.schedule, color: Color(0xFF5500FF), size: 44),
+                          ),
+                          const SizedBox(height: 24),
+                          Text(
+                            'Search Still Running…',
+                            style: Theme.of(context).textTheme.headlineSmall
+                                ?.copyWith(fontWeight: FontWeight.w800),
+                            textAlign: TextAlign.center,
+                          ),
+                          const SizedBox(height: 10),
+                          Text(
+                            'We\'re still searching for available providers. You can try again or cancel this request.',
+                            style: Theme.of(context).textTheme.bodyLarge
+                                ?.copyWith(color: const Color(0xFF666A7A)),
+                            textAlign: TextAlign.center,
+                          ),
+                          const SizedBox(height: 32),
+                          SizedBox(
+                            width: double.infinity,
+                            child: ElevatedButton.icon(
+                              icon: const Icon(Icons.refresh),
+                              label: const Text('Resend Request',
+                                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+                              onPressed: () {
+                                setState(() {
+                                  _isSearchingBoosters = true;
+                                  _searchTimedOut = false;
+                                  _resendAttempts++;
+                                  _searchStartTime = DateTime.now();
+                                  _searchTimeoutTimer?.cancel();
+                                  _searchTimeoutTimer = Timer(const Duration(minutes: 30), () {
+                                    if (mounted && _isSearchingBoosters) {
+                                      setState(() => _searchTimedOut = true);
+                                    }
+                                  });
+                                });
+                              },
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: const Color(0xFF5500FF),
+                                foregroundColor: Colors.white,
+                                padding: const EdgeInsets.symmetric(vertical: 16),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          SizedBox(
+                            width: double.infinity,
+                            child: OutlinedButton(
+                              onPressed: () {
+                                setState(() {
+                                  _isSearchingBoosters = false;
+                                  _searchTimedOut = false;
+                                  _resendAttempts = 0;
+                                  _searchStartTime = null;
+                                  _searchTimeoutTimer?.cancel();
+                                  _flowStep = 1;
+                                });
+                              },
+                              style: OutlinedButton.styleFrom(
+                                padding: const EdgeInsets.symmetric(vertical: 16),
+                                side: const BorderSide(color: Color(0xFFCCCCCC)),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+                              ),
+                              child: const Text('Cancel Request',
+                                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: Color(0xFF5500FF))),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              );
+            }
+
+            // Second timeout - show App Store share popup
+            if (_searchTimedOut && _resendAttempts > 1) {
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (mounted) {
+                  showDialog(
+                    context: context,
+                    builder: (ctx) => AlertDialog(
+                      title: const Text('No Providers Available'),
+                      content: const Text(
+                        'We couldn\'t find available providers after searching twice. '
+                        'Help grow our network by sharing Boosstter with friends and family!',
+                      ),
+                      actions: [
+                        TextButton(
+                          onPressed: () => Navigator.pop(ctx),
+                          child: const Text('Not Now'),
+                        ),
+                        ElevatedButton.icon(
+                          icon: const Icon(Icons.share),
+                          label: const Text('Share App'),
+                          onPressed: () {
+                            Navigator.pop(ctx);
+                            const txt =
+                                '🔋 Need a battery boost? Try Boosstter — the on-demand battery boost app!\n\n'
+                                'Download on the App Store or Google Play:\nhttps://boosstter.app/download';
+                            Clipboard.setData(const ClipboardData(text: txt));
+                            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                              content: Text('Share text copied! Paste it anywhere to share.'),
+                              behavior: SnackBarBehavior.floating,
+                            ));
+                          },
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF5500FF),
+                            foregroundColor: Colors.white,
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                }
+              });
+            }
+
+            // Normal searching state - keep searching
       return Container(
         color: const Color(0xFFF3F3F7),
         child: SafeArea(
@@ -1747,7 +1923,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
                   Text(
                     "Hang tight — we're finding a certified battery boost provider in your area.",
                     style: Theme.of(context).textTheme.bodyLarge
-                        ?.copyWith(color: const Color(0xFF666A7A)),
+                      ?.copyWith(color: const Color(0xFF0EA5E9), fontWeight: FontWeight.w600),
                     textAlign: TextAlign.center,
                   ),
                   const SizedBox(height: 28),
