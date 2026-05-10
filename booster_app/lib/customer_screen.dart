@@ -1065,7 +1065,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
           ? _buildBoostStep4(context)
           : (_serviceType == _serviceTypeTow || _serviceType == _serviceTypeMechanic)
               ? _buildTowFlow(context)
-              : _buildBoostFlow(context)),
+              : _buildBoostFlow(context),
     );
   }
 
