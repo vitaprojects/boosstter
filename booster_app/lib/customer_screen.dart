@@ -1509,10 +1509,22 @@ class _CustomerScreenState extends State<CustomerScreen> {
                               ],
                             ),
                             const SizedBox(height: 8),
-                            Text(
-                              _towDetectedLocationAddress ?? 'Detecting current location...',
-                              style: Theme.of(context).textTheme.bodyLarge,
-                            ),
+                            _towDetectedLocationAddress != null
+                                ? Text(
+                                    _towDetectedLocationAddress!,
+                                    style: Theme.of(context).textTheme.bodyLarge,
+                                  )
+                                : const Row(
+                                    children: [
+                                      SizedBox(
+                                        width: 16,
+                                        height: 16,
+                                        child: CircularProgressIndicator(strokeWidth: 2),
+                                      ),
+                                      SizedBox(width: 10),
+                                      Text('Detecting current location...'),
+                                    ],
+                                  ),
                           ],
                         ),
                       )
@@ -1546,7 +1558,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
                           ),
                           child: Text(
                             _towLocationTabIndex == 0
-                                ? 'Save Current Location'
+                                ? 'Use Current Location'
                                 : 'Save Address',
                             style: const TextStyle(
                               fontSize: 18,
