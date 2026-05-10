@@ -226,17 +226,23 @@ class _CustomerScreenState extends State<CustomerScreen> {
       return false;
     }
 
-    final bool isSubscribed = userDoc['isSubscribed'] ?? false;
+    final data = userDoc.data() ?? <String, dynamic>{};
+    final bool isSubscribed = data['yearlySubscriptionPaid'] == true || data['isSubscribed'] == true;
     if (isSubscribed) {
       return true;
     }
 
-    await Navigator.push(
+    final result = await Navigator.push<bool>(
       context,
-      MaterialPageRoute(builder: (context) => const PaywallScreen()),
+      MaterialPageRoute(
+        builder: (context) => PaywallScreen(
+          isFirstTimer: true,
+          pickupAddress: _pickupAddress,
+        ),
+      ),
     );
 
-    return false;
+    return result == true;
   }
 
   Future<void> _openPickupSelector({
@@ -1495,7 +1501,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
                                   onPressed: _isWaitingForBooster
                                       ? null
                                       : () => _requestBoost(booster.userId),
-                                  child: const Text('Request'),
+                                  child: const Text('Request Now'),
                                 ),
                               ],
                             ),
