@@ -46,7 +46,7 @@ class ProjectFlowCheckpoint {
   static const double canadianTaxRate = 0.13; // 13%
 
   static const String pricingRule =
-      'Tow total = tow service + tax(13% for Canadian users) + first-use yearly subscription ($9 once)';
+      'Tow total = tow service + tax(13% for Canadian users) + first-use yearly subscription (\$9 once)';
 
   static const List<String> nextPlanned = <String>[
     'Tow final dispatch polish and provider queue UX',
