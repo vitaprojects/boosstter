@@ -70,11 +70,40 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _startCustomerService(String serviceType) async {
+    final hasActiveTask = await _hasActiveCustomerTask();
+    if (!mounted) return;
+
+    if (hasActiveTask) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Complete your current request before starting a new one.'),
+        ),
+      );
+      Navigator.of(context).push(
+        MaterialPageRoute(builder: (_) => const CustomerScreen()),
+      );
+      return;
+    }
+
     await _setRoleForCurrentUser('customer', serviceType: serviceType);
     if (!mounted) return;
     Navigator.of(context).push(
       MaterialPageRoute(builder: (_) => const CustomerScreen()),
     );
+  }
+
+  Future<bool> _hasActiveCustomerTask() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return false;
+
+    final snapshot = await FirebaseFirestore.instance
+        .collection('requests')
+        .where('customerId', isEqualTo: user.uid)
+        .where('status', whereIn: ['pending', 'awaiting_payment', 'paid', 'accepted', 'en_route'])
+        .limit(1)
+        .get();
+
+    return snapshot.docs.isNotEmpty;
   }
 
   Future<void> _openRequestsTab() async {

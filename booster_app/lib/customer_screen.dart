@@ -2314,6 +2314,17 @@ class _CustomerScreenState extends State<CustomerScreen> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
+                              'Step ${_towStep.clamp(1, 4)} of 4',
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .labelLarge
+                                  ?.copyWith(
+                                    color: const Color(0xFF0E90AC),
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
                               _towStep == 1
                                 ? stepOneTitle
                                 : _towStep == 2

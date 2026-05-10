@@ -185,6 +185,18 @@ class _DriverScreenState extends State<DriverScreen> {
   Future<void> _acceptRequest(String requestId) async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
+
+    if (_hasActiveJob && _activeRequestId != null && _activeRequestId != requestId) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Complete your current order before accepting another one.'),
+          ),
+        );
+      }
+      return;
+    }
+
     try {
       await FirebaseFirestore.instance
           .collection('requests')
