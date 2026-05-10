@@ -308,6 +308,7 @@ class _SectionCard extends StatelessWidget {
         border: Border.all(color: const Color(0xFFE1E2EA)),
       ),
       child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Container(
             width: 48,
@@ -323,7 +324,10 @@ class _SectionCard extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Row(
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 6,
+                  crossAxisAlignment: WrapCrossAlignment.center,
                   children: [
                     Text(
                       title,
@@ -332,8 +336,7 @@ class _SectionCard extends StatelessWidget {
                         fontSize: 15,
                       ),
                     ),
-                    if (badge != null) ...[
-                      const SizedBox(width: 8),
+                    if (badge != null)
                       Container(
                         padding: const EdgeInsets.symmetric(
                           horizontal: 8,
@@ -356,7 +359,6 @@ class _SectionCard extends StatelessWidget {
                           ),
                         ),
                       ),
-                    ],
                   ],
                 ),
                 const SizedBox(height: 3),
@@ -367,13 +369,20 @@ class _SectionCard extends StatelessWidget {
               ],
             ),
           ),
-          const SizedBox(width: 12),
-          Text(
-            trailing,
-            style: const TextStyle(
-              fontWeight: FontWeight.w800,
-              fontSize: 16,
-              color: Color(0xFF1F2233),
+          const SizedBox(width: 8),
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 92),
+            child: FittedBox(
+              fit: BoxFit.scaleDown,
+              alignment: Alignment.centerRight,
+              child: Text(
+                trailing,
+                style: const TextStyle(
+                  fontWeight: FontWeight.w800,
+                  fontSize: 16,
+                  color: Color(0xFF1F2233),
+                ),
+              ),
             ),
           ),
         ],
