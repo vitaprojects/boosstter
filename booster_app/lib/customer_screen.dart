@@ -71,7 +71,6 @@ class _CustomerScreenState extends State<CustomerScreen> {
   int _resendAttempts = 0;
   bool get _isWaitingForBooster {
     return _activeRequestStatus == 'pending' ||
-        _activeRequestStatus == 'awaiting_payment' ||
         _activeRequestStatus == 'paid' ||
         _activeRequestStatus == 'accepted' ||
         _activeRequestStatus == 'en_route';
@@ -486,7 +485,9 @@ class _CustomerScreenState extends State<CustomerScreen> {
         'customerId': user.uid,
         'driverId': nearestProvider.userId,
         'serviceType': _serviceType,
-        'status': 'pending',
+        'status': 'paid',
+        'paidAt': FieldValue.serverTimestamp(),
+        'paymentProvider': 'in_app',
         'pickupAddress': _pickupAddress,
         'pickupLatitude': _pickupLatLng!.latitude,
         'pickupLongitude': _pickupLatLng!.longitude,
@@ -514,7 +515,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
       if (!mounted) return;
       setState(() {
         _activeRequestId = requestRef.id;
-        _activeRequestStatus = 'pending';
+        _activeRequestStatus = 'paid';
         _activeDriverId = nearestProvider.userId;
         _activeServiceType = _serviceType;
         _towStep = 4;
@@ -526,15 +527,15 @@ class _CustomerScreenState extends State<CustomerScreen> {
       // Setup 30-minute timeout timer
       _searchTimeoutTimer?.cancel();
       _searchTimeoutTimer = Timer(const Duration(minutes: 30), () {
-        if (mounted && _activeRequestStatus == 'pending') {
+        if (mounted && (_activeRequestStatus == 'pending' || _activeRequestStatus == 'paid')) {
           setState(() => _searchTimedOut = true);
         }
       });
 
       _showSuccessSnackBar(
         _serviceType == _serviceTypeMechanic
-            ? 'Mobile mechanic request sent to nearest provider. Waiting for acceptance...'
-            : 'Tow request sent to nearest provider. Waiting for acceptance...',
+        ? 'Payment confirmed. Mobile mechanic request sent to nearest provider.'
+        : 'Payment confirmed. Tow request sent to nearest provider.',
       );
     } catch (_) {
       if (!mounted) return;
@@ -637,7 +638,11 @@ class _CustomerScreenState extends State<CustomerScreen> {
         'customerId': user.uid,
         'driverId': driverId,
         'serviceType': _serviceType,
-        'status': 'pending',
+        'status': 'paid',
+        'paidAt': FieldValue.serverTimestamp(),
+        'paymentAmount': boostPaymentTotalCadCents,
+        'paymentCurrency': 'cad',
+        'paymentProvider': 'in_app',
         'pickupAddress': _pickupAddress,
         'pickupLatitude': _pickupLatLng!.latitude,
         'pickupLongitude': _pickupLatLng!.longitude,
@@ -650,13 +655,13 @@ class _CustomerScreenState extends State<CustomerScreen> {
       if (mounted) {
         setState(() {
           _activeRequestId = docRef.id;
-          _activeRequestStatus = 'pending';
+          _activeRequestStatus = 'paid';
           _activeDriverId = driverId;
           _activeServiceType = _serviceTypeBoost;
           _flowStep = 4;
         });
         _showSuccessSnackBar(
-          'Invite sent. Waiting for booster confirmation.',
+          'Payment confirmed. Request sent and waiting for provider acceptance.',
         );
       }
     } catch (e) {
@@ -809,33 +814,21 @@ class _CustomerScreenState extends State<CustomerScreen> {
         if (_pickupLatLng == null && requestPickupLat != null && requestPickupLng != null) {
           _pickupLatLng = LatLng(requestPickupLat, requestPickupLng);
         }
-        if (newStatus == 'pending' || newStatus == 'awaiting_payment' || newStatus == 'paid' || newStatus == 'accepted' || newStatus == 'en_route') {
+        if (newStatus == 'pending' || newStatus == 'paid' || newStatus == 'accepted' || newStatus == 'en_route') {
           _flowStep = 4;
         }
       });
 
-      // Auto-show payment sheet when booster accepts (fires once)
-      if (prevStatus != 'awaiting_payment' && newStatus == 'awaiting_payment') {
-                // Provider found! Reset timeout
-                _searchTimeoutTimer?.cancel();
-                setState(() {
-                  _isSearchingBoosters = false;
-                    _searchTimedOut = false;
-                    _resendAttempts = 0;
-                    _searchStartTime = null;
-                    _searchTimeoutTimer?.cancel();
-                  _searchTimedOut = false;
-                });
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) _showPaymentSheet(doc.id);
-        });
-      }
-
       if ((newStatus == 'accepted' || newStatus == 'en_route') &&
           prevStatus != newStatus &&
           _activeDriverId != null) {
-          // Provider accepted! Reset timeout
-          _searchTimeoutTimer?.cancel();
+        _searchTimeoutTimer?.cancel();
+        setState(() {
+          _isSearchingBoosters = false;
+          _searchTimedOut = false;
+          _resendAttempts = 0;
+          _searchStartTime = null;
+        });
         _notifyProviderEta(_activeDriverId!);
       }
 
@@ -1070,7 +1063,6 @@ class _CustomerScreenState extends State<CustomerScreen> {
   @override
   Widget build(BuildContext context) {
     final hasActiveOrder = _activeRequestId != null ||
-        _activeRequestStatus == 'awaiting_payment' ||
         _activeRequestStatus == 'paid' ||
         _activeRequestStatus == 'accepted' ||
         _activeRequestStatus == 'en_route' ||
@@ -1111,7 +1103,6 @@ class _CustomerScreenState extends State<CustomerScreen> {
   Widget _buildBoostFlow(BuildContext context) {
     final hasActiveBoostRequest = _activeRequestId != null ||
         _isWaitingForBooster ||
-        _activeRequestStatus == 'awaiting_payment' ||
         _activeRequestStatus == 'paid' ||
         _activeRequestStatus == 'accepted' ||
         _activeRequestStatus == 'en_route' ||
@@ -1607,9 +1598,6 @@ class _CustomerScreenState extends State<CustomerScreen> {
                       _RequestStatusCard(
                         status: _activeRequestStatus ?? 'pending',
                         driverId: _activeDriverId,
-                        onPayNow: _activeRequestStatus == 'awaiting_payment'
-                            ? () => _showPaymentSheet(_activeRequestId!)
-                            : null,
                       ),
                     ],
                     if (_providerEtaSummary != null) ...[
@@ -2125,22 +2113,6 @@ class _CustomerScreenState extends State<CustomerScreen> {
                   ),
                 ),
                 const SizedBox(height: 24),
-                if (status == 'awaiting_payment' && _activeRequestId != null)
-                  SizedBox(
-                    width: double.infinity,
-                    child: ElevatedButton.icon(
-                      icon: const Icon(Icons.payment),
-                      label: const Text('Pay Now',
-                          style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700)),
-                      onPressed: () => _showPaymentSheet(_activeRequestId!),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFF16A34A),
-                        foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(vertical: 16),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                      ),
-                    ),
-                  ),
                 if ((status == 'accepted' || status == 'en_route') && !isCompleted)
                   SizedBox(
                     width: double.infinity,
@@ -2226,6 +2198,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
       case 'en_route':
         return const Color(0xFF0EA5E9);
       case 'paid':
+        return const Color(0xFFF59E0B);
       case 'completed':
         return const Color(0xFF16A34A);
       case 'awaiting_payment':
@@ -2261,7 +2234,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
       case 'awaiting_payment':
         return 'Payment Required';
       case 'paid':
-        return 'Payment Received – Provider Confirmed';
+        return 'Payment Received – Waiting for Provider Acceptance';
       case 'accepted':
         return isTow
             ? 'Tow Operator Accepted – On the Way'
@@ -2765,9 +2738,6 @@ class _CustomerScreenState extends State<CustomerScreen> {
                 _RequestStatusCard(
                   status: _activeRequestStatus ?? 'pending',
                   driverId: _activeDriverId,
-                  onPayNow: _activeRequestStatus == 'awaiting_payment'
-                      ? () => _showPaymentSheet(_activeRequestId!)
-                      : null,
                 ),
               ],
               if (_providerEtaSummary != null) ...[
@@ -2883,7 +2853,7 @@ class _RequestStatusCard extends StatelessWidget {
         : isEnRoute
             ? 'Booster is on the way'
             : isPaid
-                ? 'Payment confirmed — booster heading over'
+          ? 'Payment confirmed — waiting for provider acceptance'
                 : needsPayment
                     ? 'Booster accepted — payment required'
                     : 'Waiting for booster to accept';
@@ -2893,7 +2863,7 @@ class _RequestStatusCard extends StatelessWidget {
         : isEnRoute
             ? 'Booster is en route to your location'
             : isPaid
-                ? 'Sit tight, help is on the way!'
+          ? 'Your paid order is in the provider queue.'
                 : needsPayment
                     ? 'Tap "Pay Now" to confirm and dispatch the booster'
                     : 'Invite sent. Please wait for confirmation.';

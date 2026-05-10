@@ -77,7 +77,7 @@ class _DriverScreenState extends State<DriverScreen> {
     _activeJobSub = FirebaseFirestore.instance
         .collection('requests')
         .where('driverId', isEqualTo: user.uid)
-        .where('status', whereIn: ['pending', 'awaiting_payment', 'paid', 'accepted', 'en_route'])
+      .where('status', whereIn: ['paid', 'accepted', 'en_route'])
         .orderBy('timestamp', descending: true)
         .limit(1)
         .snapshots()
@@ -190,7 +190,7 @@ class _DriverScreenState extends State<DriverScreen> {
           .collection('requests')
           .doc(requestId)
           .update({
-        'status': 'awaiting_payment',
+        'status': 'accepted',
         'driverId': user.uid,
         'driverEmail': user.email ?? '',
         'acceptedAt': FieldValue.serverTimestamp(),
@@ -440,7 +440,7 @@ class _DriverScreenState extends State<DriverScreen> {
   }
 
   Widget _buildActiveJobCard() {
-    final status = _activeRequestStatus ?? 'pending';
+    final status = _activeRequestStatus ?? 'paid';
     final isTowOrder = _activeServiceType == 'tow';
     final isMechanicOrder = _activeServiceType == 'mobile_mechanic';
     final Color statusColor;
@@ -450,23 +450,16 @@ class _DriverScreenState extends State<DriverScreen> {
     final String nextStatus;
 
     switch (status) {
-      case 'pending':
+      case 'paid':
         statusColor = const Color(0xFFF59E0B);
         statusIcon = Icons.hourglass_top;
         statusLabel = isTowOrder
-            ? 'New Tow Request'
+            ? 'Paid Tow Request'
             : isMechanicOrder
-                ? 'New Mechanic Request'
-                : 'New Boost Request';
+                ? 'Paid Mechanic Request'
+                : 'Paid Boost Request';
         actionLabel = 'Accept Request';
-        nextStatus = 'awaiting_payment';
-        break;
-      case 'awaiting_payment':
-        statusColor = const Color(0xFFF59E0B);
-        statusIcon = Icons.payment;
-        statusLabel = 'Waiting for Customer Payment';
-        actionLabel = '';
-        nextStatus = '';
+        nextStatus = 'accepted';
         break;
       case 'paid':
         statusColor = const Color(0xFF22C55E);
@@ -632,7 +625,7 @@ class _DriverScreenState extends State<DriverScreen> {
                           borderRadius: BorderRadius.circular(12)),
                     ),
                     onPressed: () {
-                      if (status == 'pending') {
+                      if (status == 'paid') {
                         _acceptRequest(_activeRequestId!);
                       } else {
                         _updateJobStatus(nextStatus);
@@ -640,23 +633,6 @@ class _DriverScreenState extends State<DriverScreen> {
                     },
                   ),
                 ),
-                if (status == 'awaiting_payment') ...[
-                  const SizedBox(height: 8),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(
-                            strokeWidth: 2, color: statusColor),
-                      ),
-                      const SizedBox(width: 8),
-                      Text('Waiting for customer to pay...',
-                          style: TextStyle(color: statusColor, fontSize: 13)),
-                    ],
-                  ),
-                ],
               ],
             ),
           ),
@@ -673,7 +649,7 @@ class _DriverScreenState extends State<DriverScreen> {
       stream: FirebaseFirestore.instance
           .collection('requests')
           .where('driverId', isEqualTo: user.uid)
-          .where('status', isEqualTo: 'pending')
+          .where('status', isEqualTo: 'paid')
           .orderBy('timestamp', descending: true)
           .snapshots(),
       builder: (context, snapshot) {
