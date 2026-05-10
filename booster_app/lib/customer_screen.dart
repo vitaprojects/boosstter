@@ -810,6 +810,12 @@ class _CustomerScreenState extends State<CustomerScreen> {
         _activeRequestStatus = newStatus;
         _activeDriverId = data['driverId']?.toString();
         _activeServiceType = data['serviceType']?.toString();
+        // Keep the screen service context aligned with the active request.
+        if (_activeServiceType == _serviceTypeBoost ||
+            _activeServiceType == _serviceTypeTow ||
+            _activeServiceType == _serviceTypeMechanic) {
+          _serviceType = _activeServiceType!;
+        }
         _pickupAddress = _pickupAddress ?? requestPickupAddress;
         if (_pickupLatLng == null && requestPickupLat != null && requestPickupLng != null) {
           _pickupLatLng = LatLng(requestPickupLat, requestPickupLng);
@@ -1067,13 +1073,16 @@ class _CustomerScreenState extends State<CustomerScreen> {
         _activeRequestStatus == 'accepted' ||
         _activeRequestStatus == 'en_route' ||
         _activeRequestStatus == 'completed';
+    final effectiveServiceType = hasActiveOrder
+        ? (_activeServiceType ?? _serviceType)
+        : _serviceType;
 
     return Scaffold(
       appBar: AppBar(
         title: Text(
-          _serviceType == _serviceTypeTow
+          effectiveServiceType == _serviceTypeTow
             ? 'Tow Assistance'
-            : _serviceType == _serviceTypeMechanic
+            : effectiveServiceType == _serviceTypeMechanic
               ? 'Mobile Mechanic Assistance'
               : 'Battery Boost Assistance',
         ),
@@ -1094,7 +1103,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
       ),
       body: hasActiveOrder
           ? _buildBoostStep4(context)
-          : (_serviceType == _serviceTypeTow || _serviceType == _serviceTypeMechanic)
+          : (effectiveServiceType == _serviceTypeTow || effectiveServiceType == _serviceTypeMechanic)
               ? _buildTowFlow(context)
               : _buildBoostFlow(context),
     );
