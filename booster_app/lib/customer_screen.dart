@@ -6,8 +6,10 @@ import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:geocoding/geocoding.dart';
+import 'package:flutter/services.dart';
 import 'login_screen.dart';
 import 'paywall_screen.dart';
+import 'review_screen.dart';
 import 'stripe_payment_service.dart';
 
 class CustomerScreen extends StatefulWidget {
@@ -50,6 +52,16 @@ class _CustomerScreenState extends State<CustomerScreen> {
   String? _activeRequestStatus;
   String? _activeDriverId;
   String? _providerEtaSummary;
+
+  // Step 4 tracking
+  String? _providerDisplayName;
+  double? _providerDistanceKm;
+  int? _providerEtaMinutes;
+  double? _providerLat;
+  double? _providerLng;
+  bool _showTrackingMap = false;
+  bool _isCompletingJob = false;
+  bool _noProvidersFound = false;
 
   bool get _isWaitingForBooster {
     return _activeRequestStatus == 'pending' ||
@@ -491,14 +503,39 @@ class _CustomerScreenState extends State<CustomerScreen> {
       return;
     }
     if (_isSearchingBoosters) return;
+
+    // Check subscription status and show paywall
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+    final userDoc = await FirebaseFirestore.instance.collection('users').doc(user.uid).get();
+    if (!mounted) return;
+    final data = userDoc.data() ?? <String, dynamic>{};
+    final isFirstTimer = !(data['yearlySubscriptionPaid'] == true);
+
+    final proceed = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => PaywallScreen(
+          isFirstTimer: isFirstTimer,
+          pickupAddress: _pickupAddress,
+        ),
+      ),
+    );
+    if (proceed != true || !mounted) return;
+
+    // Now search and place request
+    setState(() {
+      _isSearchingBoosters = true;
+      _flowStep = 4;
+      _noProvidersFound = false;
+    });
+    await _searchNearbyBoosters();
+    if (!mounted) return;
+
     if (_nearbyBoosters.isEmpty) {
-      await _searchNearbyBoosters();
-      if (!mounted) return;
-    }
-    if (_nearbyBoosters.isEmpty) {
-      _showErrorSnackBar('No providers found nearby. Try again in a moment.', Icons.search_off);
+      setState(() => _noProvidersFound = true);
       return;
     }
+
     await _requestBoost(_nearbyBoosters.first.userId);
   }
 
@@ -725,6 +762,13 @@ class _CustomerScreenState extends State<CustomerScreen> {
           _activeDriverId != null) {
         _notifyProviderEta(_activeDriverId!);
       }
+
+      // Trigger review prompt when job completes
+      if (prevStatus != 'completed' && newStatus == 'completed') {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _promptReview(doc.id);
+        });
+      }
     });
   }
 
@@ -746,8 +790,16 @@ class _CustomerScreenState extends State<CustomerScreen> {
       final data = providerDoc.data();
       final lat = (data?['latitude'] as num?)?.toDouble();
       final lng = (data?['longitude'] as num?)?.toDouble();
+      final name = (data?['displayName'] as String?) ??
+          (data?['name'] as String?) ??
+          'Your Provider';
+
       if (lat == null || lng == null || (lat == 0.0 && lng == 0.0)) {
-        _showSuccessSnackBar('Provider accepted and is heading to your location.');
+        if (!mounted) return;
+        setState(() {
+          _providerDisplayName = name;
+          _providerEtaSummary = '$name is heading to your location.';
+        });
         return;
       }
 
@@ -762,9 +814,14 @@ class _CustomerScreenState extends State<CustomerScreen> {
       final etaMinutes = ((distanceKm / 40.0) * 60.0).ceil().clamp(1, 240);
 
       final summary =
-          'Provider is heading to you • ETA $etaMinutes min • ${distanceKm.toStringAsFixed(1)} km (${distanceMi.toStringAsFixed(1)} mi)';
+          '$name is heading to you • ETA $etaMinutes min • ${distanceKm.toStringAsFixed(1)} km (${distanceMi.toStringAsFixed(1)} mi)';
       if (!mounted) return;
       setState(() {
+        _providerDisplayName = name;
+        _providerDistanceKm = distanceKm;
+        _providerEtaMinutes = etaMinutes;
+        _providerLat = lat;
+        _providerLng = lng;
         _providerEtaSummary = summary;
       });
       _showSuccessSnackBar(summary);
@@ -772,6 +829,55 @@ class _CustomerScreenState extends State<CustomerScreen> {
       if (!mounted) return;
       _showSuccessSnackBar('Provider accepted and is heading to your location.');
     }
+  }
+
+  Future<void> _markJobComplete() async {
+    if (_activeRequestId == null || _isCompletingJob) return;
+    setState(() => _isCompletingJob = true);
+    try {
+      await FirebaseFirestore.instance
+          .collection('requests')
+          .doc(_activeRequestId)
+          .update({
+        'status': 'completed',
+        'completedAt': FieldValue.serverTimestamp(),
+      });
+    } catch (e) {
+      if (mounted) {
+        _showErrorSnackBar('Could not mark complete. Try again.', Icons.error);
+      }
+    } finally {
+      if (mounted) setState(() => _isCompletingJob = false);
+    }
+  }
+
+  Future<void> _promptReview(String requestId) async {
+    if (!mounted) return;
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => ReviewScreen(
+          requestId: requestId,
+          providerName: _providerDisplayName ?? 'Your Provider',
+          isCustomerReviewing: true,
+        ),
+      ),
+    );
+    if (!mounted) return;
+    // Reset flow after review
+    setState(() {
+      _flowStep = 1;
+      _activeRequestId = null;
+      _activeRequestStatus = null;
+      _activeDriverId = null;
+      _providerEtaSummary = null;
+      _providerDisplayName = null;
+      _providerDistanceKm = null;
+      _providerEtaMinutes = null;
+      _providerLat = null;
+      _providerLng = null;
+      _noProvidersFound = false;
+      _isSearchingBoosters = false;
+    });
   }
 
   Future<void> _showPaymentSheet(String requestId) async {
@@ -915,8 +1021,13 @@ class _CustomerScreenState extends State<CustomerScreen> {
   }
 
   Widget _buildBoostFlow(BuildContext context) {
-    // Step 3+: review & pay page
-    if (_flowStep >= 3) {
+    // ── Step 4: Tracking ──────────────────────────────────────────────────
+    if (_flowStep == 4) {
+      return _buildBoostStep4(context);
+    }
+
+    // ── Step 3: Review & Pay ──────────────────────────────────────────────
+    if (_flowStep == 3) {
       final vehicleLabel = _selectedBoostVehicleType == _electricVehicleType
           ? 'Electric Car Boost${_selectedBoostPlugType != null ? ' (${_selectedBoostPlugType})' : ''}'
           : 'Regular Car Boost';
@@ -1094,30 +1205,6 @@ class _CustomerScreenState extends State<CustomerScreen> {
                   ],
                 ),
               ),
-              if (_activeRequestId != null) ...[
-                const SizedBox(height: 14),
-                _RequestStatusCard(
-                  status: _activeRequestStatus ?? 'pending',
-                  driverId: _activeDriverId,
-                  onPayNow: _activeRequestStatus == 'awaiting_payment'
-                      ? () => _showPaymentSheet(_activeRequestId!)
-                      : null,
-                ),
-              ],
-              if (_providerEtaSummary != null) ...[
-                const SizedBox(height: 10),
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF0EA5E9).withValues(alpha: 0.12),
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(
-                        color: const Color(0xFF0EA5E9).withValues(alpha: 0.5)),
-                  ),
-                  child: Text(_providerEtaSummary!,
-                      style: Theme.of(context).textTheme.bodyMedium),
-                ),
-              ],
             ],
           ),
         ),
@@ -1480,6 +1567,402 @@ class _CustomerScreenState extends State<CustomerScreen> {
                 ),
               ),
             );
+  }
+  // ── Step 4: live tracking, searching, no-provider, completion ─────────────
+  Widget _buildBoostStep4(BuildContext context) {
+    final status = _activeRequestStatus ?? 'pending';
+    final hasProvider = _activeDriverId != null &&
+        (status == 'accepted' || status == 'en_route' || status == 'paid' || status == 'completed');
+    final isCompleted = status == 'completed';
+
+    // ── No providers found ───────────────────────────────────────────────────
+    if (_noProvidersFound) {
+      return Container(
+        color: const Color(0xFFF3F3F7),
+        child: SafeArea(
+          child: Center(
+            child: Padding(
+              padding: const EdgeInsets.all(28),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Container(
+                    width: 88, height: 88,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFFEDD5),
+                      borderRadius: BorderRadius.circular(28),
+                    ),
+                    child: const Icon(Icons.search_off, color: Color(0xFFEA580C), size: 44),
+                  ),
+                  const SizedBox(height: 24),
+                  Text(
+                    'No Providers Nearby',
+                    style: Theme.of(context).textTheme.headlineSmall
+                        ?.copyWith(fontWeight: FontWeight.w800),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 10),
+                  Text(
+                    "We couldn't find a battery boost provider near you right now. "
+                    'Help grow our network — share the app with friends who could become providers!',
+                    style: Theme.of(context).textTheme.bodyLarge
+                        ?.copyWith(color: const Color(0xFF666A7A)),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 32),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      icon: const Icon(Icons.share),
+                      label: const Text('Share Boosstter with Friends',
+                          style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+                      onPressed: () {
+                        const txt =
+                            '🔋 Need a battery boost? Try Boosstter — the on-demand battery boost app!\n\n'
+                            'Download on the App Store or Google Play:\nhttps://boosstter.app/download';
+                        Clipboard.setData(const ClipboardData(text: txt));
+                        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                          content: Text('Share text copied! Paste it anywhere to share.'),
+                          behavior: SnackBarBehavior.floating,
+                        ));
+                      },
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF5500FF),
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  TextButton(
+                    onPressed: () => setState(() {
+                      _flowStep = 3;
+                      _noProvidersFound = false;
+                      _isSearchingBoosters = false;
+                    }),
+                    child: const Text('Try Again'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    // ── Searching animation ──────────────────────────────────────────────────
+    if (_isSearchingBoosters && !hasProvider) {
+      return Container(
+        color: const Color(0xFFF3F3F7),
+        child: SafeArea(
+          child: Center(
+            child: Padding(
+              padding: const EdgeInsets.all(32),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  _PulseRing(
+                    child: Container(
+                      width: 80, height: 80,
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF5500FF),
+                        borderRadius: BorderRadius.circular(26),
+                      ),
+                      child: const Icon(Icons.battery_charging_full, color: Colors.white, size: 40),
+                    ),
+                  ),
+                  const SizedBox(height: 32),
+                  Text(
+                    'Searching Nearby Providers…',
+                    style: Theme.of(context).textTheme.headlineSmall
+                        ?.copyWith(fontWeight: FontWeight.w800),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 10),
+                  Text(
+                    "Hang tight — we're finding a certified battery boost provider in your area.",
+                    style: Theme.of(context).textTheme.bodyLarge
+                        ?.copyWith(color: const Color(0xFF666A7A)),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 28),
+                  const CircularProgressIndicator(color: Color(0xFF5500FF)),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    // ── Provider accepted / tracking / completed ─────────────────────────────
+    return DefaultTabController(
+      length: 2,
+      child: Scaffold(
+        backgroundColor: const Color(0xFFF3F3F7),
+        appBar: AppBar(
+          automaticallyImplyLeading: false,
+          title: Text(
+            isCompleted ? '✅ Boost Complete' : '⚡ Provider Found',
+            style: const TextStyle(fontWeight: FontWeight.w700),
+          ),
+          bottom: const TabBar(
+            indicatorColor: Color(0xFF5500FF),
+            labelColor: Color(0xFF5500FF),
+            unselectedLabelColor: Colors.grey,
+            tabs: [
+              Tab(icon: Icon(Icons.info_outline), text: 'Details'),
+              Tab(icon: Icon(Icons.map_outlined), text: 'Track on Map'),
+            ],
+          ),
+        ),
+        body: TabBarView(
+          children: [
+            // Details tab
+            ListView(
+              padding: const EdgeInsets.fromLTRB(18, 14, 18, 24),
+              children: [
+                _StepProgressRow(activeStep: 4, totalSteps: 4),
+                const SizedBox(height: 16),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                  decoration: BoxDecoration(
+                    color: _statusColor(status).withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: _statusColor(status).withValues(alpha: 0.4)),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(_statusIcon(status), color: _statusColor(status), size: 22),
+                      const SizedBox(width: 10),
+                      Flexible(child: Text(_statusLabel(status),
+                          style: TextStyle(color: _statusColor(status),
+                              fontWeight: FontWeight.w700, fontSize: 15))),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 16),
+                if (_providerDisplayName != null)
+                  Container(
+                    padding: const EdgeInsets.all(18),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(18),
+                      border: Border.all(color: const Color(0xFFE1E2EA)),
+                      boxShadow: const [BoxShadow(color: Color(0x0D000000), blurRadius: 10, offset: Offset(0, 2))],
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Container(
+                              width: 52, height: 52,
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFEDE9FE),
+                                borderRadius: BorderRadius.circular(16),
+                              ),
+                              child: const Icon(Icons.person, color: Color(0xFF5500FF), size: 28),
+                            ),
+                            const SizedBox(width: 14),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(_providerDisplayName!,
+                                      style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
+                                  Text('Certified Battery Boost Provider',
+                                      style: TextStyle(color: Colors.grey[600], fontSize: 13)),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                        if (_providerDistanceKm != null) ...[
+                          const SizedBox(height: 16),
+                          const Divider(height: 1),
+                          const SizedBox(height: 16),
+                          Row(
+                            children: [
+                              Expanded(child: _InfoTile(
+                                icon: Icons.straighten, label: 'Distance',
+                                value: '${_providerDistanceKm!.toStringAsFixed(1)} km  /  '
+                                    '${(_providerDistanceKm! * 0.621371).toStringAsFixed(1)} mi',
+                              )),
+                              const SizedBox(width: 12),
+                              Expanded(child: _InfoTile(
+                                icon: Icons.schedule, label: 'ETA',
+                                value: '${_providerEtaMinutes ?? '–'} min',
+                              )),
+                            ],
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                const SizedBox(height: 14),
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(color: const Color(0xFFE1E2EA)),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.place, color: Color(0xFF6366F1)),
+                      const SizedBox(width: 12),
+                      Expanded(child: Text(_pickupAddress ?? 'Your Location',
+                          style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500))),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 24),
+                if (status == 'awaiting_payment' && _activeRequestId != null)
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      icon: const Icon(Icons.payment),
+                      label: const Text('Pay Now',
+                          style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700)),
+                      onPressed: () => _showPaymentSheet(_activeRequestId!),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF16A34A), foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                      ),
+                    ),
+                  ),
+                if ((status == 'accepted' || status == 'en_route') && !isCompleted)
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      icon: _isCompletingJob
+                          ? const SizedBox(width: 20, height: 20,
+                              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                          : const Icon(Icons.check_circle_outline),
+                      label: const Text('Mark Job as Complete',
+                          style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700)),
+                      onPressed: _isCompletingJob ? null : _markJobComplete,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF5500FF), foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                      ),
+                    ),
+                  ),
+                if (isCompleted)
+                  Container(
+                    padding: const EdgeInsets.all(20),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFDCFCE7),
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                    child: Column(
+                      children: [
+                        const Icon(Icons.check_circle, color: Color(0xFF16A34A), size: 48),
+                        const SizedBox(height: 12),
+                        const Text('Boost Complete!', style: TextStyle(
+                          fontSize: 20, fontWeight: FontWeight.w800, color: Color(0xFF15803D))),
+                        const SizedBox(height: 6),
+                        const Text('Your battery has been boosted. Thanks for using Boosstter!',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(color: Color(0xFF166534))),
+                        const SizedBox(height: 16),
+                        ElevatedButton(
+                          onPressed: () => _promptReview(_activeRequestId ?? ''),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF16A34A), foregroundColor: Colors.white,
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          ),
+                          child: const Text('Leave a Review'),
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
+            ),
+
+            // Map tab
+            _pickupLatLng == null
+                ? const Center(child: Text('Location unavailable'))
+                : GoogleMap(
+                    initialCameraPosition: CameraPosition(target: _pickupLatLng!, zoom: 14),
+                    onMapCreated: (c) => _mapController = c,
+                    markers: {
+                      Marker(
+                        markerId: const MarkerId('customer'),
+                        position: _pickupLatLng!,
+                        infoWindow: const InfoWindow(title: 'Your Location'),
+                        icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueBlue),
+                      ),
+                      if (_providerLat != null && _providerLng != null)
+                        Marker(
+                          markerId: const MarkerId('provider'),
+                          position: LatLng(_providerLat!, _providerLng!),
+                          infoWindow: InfoWindow(title: _providerDisplayName ?? 'Provider'),
+                          icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueGreen),
+                        ),
+                    },
+                    myLocationEnabled: true,
+                    myLocationButtonEnabled: true,
+                  ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Color _statusColor(String status) {
+    switch (status) {
+      case 'accepted':
+      case 'en_route':
+        return const Color(0xFF0EA5E9);
+      case 'paid':
+      case 'completed':
+        return const Color(0xFF16A34A);
+      case 'awaiting_payment':
+        return const Color(0xFFEA580C);
+      default:
+        return Colors.grey;
+    }
+  }
+
+  IconData _statusIcon(String status) {
+    switch (status) {
+      case 'accepted':
+        return Icons.handshake_outlined;
+      case 'en_route':
+        return Icons.drive_eta;
+      case 'paid':
+        return Icons.check_circle_outline;
+      case 'completed':
+        return Icons.check_circle;
+      case 'awaiting_payment':
+        return Icons.payment;
+      default:
+        return Icons.hourglass_top;
+    }
+  }
+
+  String _statusLabel(String status) {
+    switch (status) {
+      case 'pending':
+        return 'Searching for providers…';
+      case 'awaiting_payment':
+        return 'Payment Required';
+      case 'paid':
+        return 'Payment Received – Provider Confirmed';
+      case 'accepted':
+        return 'Provider Accepted – On the Way';
+      case 'en_route':
+        return 'Provider En Route to You';
+      case 'completed':
+        return 'Boost Completed Successfully';
+      default:
+        return status;
+    }
   }
 
   Widget _buildTowFlow(BuildContext context) {
@@ -2549,6 +3032,104 @@ class _NearbyBooster {
   final double longitude;
   final double distanceKm;
   final int etaMinutes;
+}
+
+// ── Pulse ring animation for searching state ───────────────────────────────
+class _PulseRing extends StatefulWidget {
+  const _PulseRing({required this.child});
+  final Widget child;
+
+  @override
+  State<_PulseRing> createState() => _PulseRingState();
+}
+
+class _PulseRingState extends State<_PulseRing>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+  late final Animation<double> _scale;
+  late final Animation<double> _opacity;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+        vsync: this, duration: const Duration(milliseconds: 1400))
+      ..repeat();
+    _scale = Tween<double>(begin: 1.0, end: 2.0).animate(
+        CurvedAnimation(parent: _ctrl, curve: Curves.easeOut));
+    _opacity = Tween<double>(begin: 0.5, end: 0.0).animate(
+        CurvedAnimation(parent: _ctrl, curve: Curves.easeOut));
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      alignment: Alignment.center,
+      children: [
+        AnimatedBuilder(
+          animation: _ctrl,
+          builder: (_, __) => Transform.scale(
+            scale: _scale.value,
+            child: Container(
+              width: 80, height: 80,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: const Color(0xFF5500FF).withValues(alpha: _opacity.value * 0.25),
+                border: Border.all(
+                  color: const Color(0xFF5500FF).withValues(alpha: _opacity.value),
+                  width: 2,
+                ),
+              ),
+            ),
+          ),
+        ),
+        widget.child,
+      ],
+    );
+  }
+}
+
+// ── Info tile (label + value) card ─────────────────────────────────────────
+class _InfoTile extends StatelessWidget {
+  const _InfoTile({required this.icon, required this.label, required this.value});
+  final IconData icon;
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF3F3F7),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, size: 18, color: const Color(0xFF5500FF)),
+          const SizedBox(width: 8),
+          Flexible(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(label,
+                    style: const TextStyle(
+                        fontSize: 11, color: Colors.grey, fontWeight: FontWeight.w500)),
+                Text(value,
+                    style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700)),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 class _StepProgressRow extends StatelessWidget {
