@@ -1252,10 +1252,14 @@ class _CustomerScreenState extends State<CustomerScreen> {
                                 child:
                                     CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
                               )
-                            : Text(
-                                'Request Battery Boost • Pay $priceDisplay',
-                                style: const TextStyle(
-                                    fontSize: 18, fontWeight: FontWeight.w700),
+                          : FittedBox(
+                            fit: BoxFit.scaleDown,
+                            child: Text(
+                              'Request & Pay $priceDisplay',
+                              maxLines: 1,
+                              style: const TextStyle(
+                                fontSize: 18, fontWeight: FontWeight.w700),
+                            ),
                               ),
                       ),
                     ),
