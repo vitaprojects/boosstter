@@ -430,6 +430,43 @@ class _CustomerScreenState extends State<CustomerScreen> {
     );
   }
 
+  String _serviceLabel(String serviceType) {
+    switch (serviceType) {
+      case _serviceTypeTow:
+        return 'Tow Assistance';
+      case _serviceTypeMechanic:
+        return 'Mobile Mechanic';
+      default:
+        return 'Battery Boost';
+    }
+  }
+
+  Future<bool> _hasConcurrentActiveRequest(String customerId) async {
+    final activeSnapshot = await FirebaseFirestore.instance
+        .collection('requests')
+        .where('customerId', isEqualTo: customerId)
+        .where('status', whereIn: ['pending', 'awaiting_payment', 'paid', 'accepted', 'en_route'])
+        .limit(1)
+        .get();
+
+    if (activeSnapshot.docs.isEmpty) {
+      return false;
+    }
+
+    if (!mounted) {
+      return true;
+    }
+
+    final activeData = activeSnapshot.docs.first.data();
+    final activeServiceType = activeData['serviceType']?.toString() ?? _serviceTypeBoost;
+    final activeLabel = _serviceLabel(activeServiceType);
+    _showErrorSnackBar(
+      'You already have an active $activeLabel request. Complete it before starting another service.',
+      Icons.block,
+    );
+    return true;
+  }
+
   Future<void> _confirmTowPaymentAndPlaceRequest() async {
     if (_selectedTowReason == null || _selectedTowReason!.isEmpty) {
       _showErrorSnackBar(
@@ -456,6 +493,15 @@ class _CustomerScreenState extends State<CustomerScreen> {
       return;
     }
 
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      return;
+    }
+
+    if (await _hasConcurrentActiveRequest(user.uid)) {
+      return;
+    }
+
     final pricing = await _computeTowPricing();
     if (!mounted) return;
 
@@ -474,11 +520,11 @@ class _CustomerScreenState extends State<CustomerScreen> {
       return;
     }
 
-    final nearestProvider = _nearbyBoosters.first;
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) {
+    if (await _hasConcurrentActiveRequest(user.uid)) {
       return;
     }
+
+    final nearestProvider = _nearbyBoosters.first;
 
     try {
       final requestRef = await FirebaseFirestore.instance.collection('requests').add({
@@ -558,6 +604,11 @@ class _CustomerScreenState extends State<CustomerScreen> {
     // Check subscription status and show paywall
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
+
+    if (await _hasConcurrentActiveRequest(user.uid)) {
+      return;
+    }
+
     final userDoc = await FirebaseFirestore.instance.collection('users').doc(user.uid).get();
     if (!mounted) return;
     final data = userDoc.data() ?? <String, dynamic>{};
@@ -604,6 +655,10 @@ class _CustomerScreenState extends State<CustomerScreen> {
   Future<void> _requestBoost(String driverId) async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
+
+    if (await _hasConcurrentActiveRequest(user.uid)) {
+      return;
+    }
 
     if (_isWaitingForBooster) {
       _showErrorSnackBar(
