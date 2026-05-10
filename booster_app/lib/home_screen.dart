@@ -19,38 +19,43 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _isSelecting = false;
   int _selectedTabIndex = 0;
 
-  static const List<_MainTabVisual> _tabs = <_MainTabVisual>[
+  static const List<_MainTabVisual> _mainTabs = <_MainTabVisual>[
     _MainTabVisual(
       label: 'Home',
       icon: Icons.home_outlined,
       activeIcon: Icons.home,
-      color: Color(0xFF5500FF),
     ),
     _MainTabVisual(
       label: 'Requests',
       icon: Icons.tune_outlined,
       activeIcon: Icons.tune,
-      color: Color(0xFFEA3DFF),
     ),
     _MainTabVisual(
       label: 'Orders NEW',
       icon: Icons.radar_outlined,
       activeIcon: Icons.radar,
-      color: Color(0xFF00E5FF),
     ),
     _MainTabVisual(
       label: 'Profile',
       icon: Icons.person_outline,
       activeIcon: Icons.person,
-      color: Color(0xFFFFD60A),
-    ),
-    _MainTabVisual(
-      label: 'Explainer',
-      icon: Icons.info_outline,
-      activeIcon: Icons.info,
-      color: Color(0xFF16A34A),
     ),
   ];
+
+  static const _MainTabVisual _explainerTab = _MainTabVisual(
+    label: 'Explainer',
+    icon: Icons.info_outline,
+    activeIcon: Icons.info,
+  );
+
+  List<_MainTabVisual> get _tabs {
+    final user = FirebaseAuth.instance.currentUser;
+    final tabs = [..._mainTabs];
+    if (user != null) {
+      tabs.add(_explainerTab);
+    }
+    return tabs;
+  }
 
   Future<void> _openNeedBoost() async {
     await _startCustomerService('boost');
@@ -117,27 +122,17 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildNavIcon(_MainTabVisual tab, bool isSelected) {
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 180),
-      curve: Curves.easeOut,
-      padding: const EdgeInsets.all(6),
-      decoration: BoxDecoration(
-        color: tab.color.withValues(alpha: isSelected ? 0.2 : 0.08),
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(
-          color: tab.color.withValues(alpha: isSelected ? 0.6 : 0.2),
-          width: 1.2,
-        ),
-      ),
-      child: Icon(
-        isSelected ? tab.activeIcon : tab.icon,
-        color: isSelected ? tab.color : const Color(0xFF8A8A9A),
-      ),
+    return Icon(
+      isSelected ? tab.activeIcon : tab.icon,
+      color: isSelected ? Colors.black : const Color(0xFF8A8A9A),
     );
   }
 
   void _onMainTabSelected(int index) {
-    if (index == 4) {
+    final tabs = _tabs;
+    final isExplainerTab = index == tabs.length - 1 && tabs.length > 4;
+    
+    if (isExplainerTab) {
       Navigator.of(context).push(
         MaterialPageRoute(
           builder: (explainerContext) => ExplainerScreen(
@@ -203,6 +198,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final tabs = _tabs;
     return Scaffold(
       body: _buildBody(),
       bottomNavigationBar: MediaQuery.removePadding(
@@ -210,13 +206,13 @@ class _HomeScreenState extends State<HomeScreen> {
         removeBottom: true,
         child: BottomNavigationBar(
           type: BottomNavigationBarType.fixed,
-          selectedItemColor: const Color(0xFF5500FF),
+          selectedItemColor: Colors.black,
           unselectedItemColor: const Color(0xFFAAAAAA),
           backgroundColor: Colors.white,
           currentIndex: _selectedTabIndex,
           onTap: _onMainTabSelected,
-          items: List<BottomNavigationBarItem>.generate(_tabs.length, (index) {
-            final tab = _tabs[index];
+          items: List<BottomNavigationBarItem>.generate(tabs.length, (index) {
+            final tab = tabs[index];
             return BottomNavigationBarItem(
               icon: _buildNavIcon(tab, false),
               activeIcon: _buildNavIcon(tab, true),
@@ -234,13 +230,11 @@ class _MainTabVisual {
     required this.label,
     required this.icon,
     required this.activeIcon,
-    required this.color,
   });
 
   final String label;
   final IconData icon;
   final IconData activeIcon;
-  final Color color;
 }
 
 class _MainServiceHub extends StatelessWidget {
