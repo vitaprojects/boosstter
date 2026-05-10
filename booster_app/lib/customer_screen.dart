@@ -67,13 +67,20 @@ class _CustomerScreenState extends State<CustomerScreen> {
   // Search timeout tracking (30 minutes = 1800 seconds)
   DateTime? _searchStartTime;
   Timer? _searchTimeoutTimer;
+  Timer? _searchCountdownTicker;
   bool _searchTimedOut = false;
   int _resendAttempts = 0;
+  int _searchRemainingSeconds = 30 * 60;
+  bool _shareDialogShownForCurrentTimeout = false;
   bool get _isWaitingForBooster {
     return _activeRequestStatus == 'pending' ||
         _activeRequestStatus == 'paid' ||
         _activeRequestStatus == 'accepted' ||
         _activeRequestStatus == 'en_route';
+  }
+
+  bool get _isSearchWindowStatus {
+    return _activeRequestStatus == 'pending' || _activeRequestStatus == 'paid';
   }
 
   @override
@@ -90,8 +97,84 @@ class _CustomerScreenState extends State<CustomerScreen> {
     _towManualVehicleController.dispose();
     _towManualAddressController.dispose();
     _towNotesController.dispose();
-      _searchTimeoutTimer?.cancel();
+    _searchTimeoutTimer?.cancel();
+    _searchCountdownTicker?.cancel();
     super.dispose();
+  }
+
+  String _formatCountdown(int totalSeconds) {
+    final clamped = totalSeconds < 0 ? 0 : totalSeconds;
+    final minutes = (clamped ~/ 60).toString().padLeft(2, '0');
+    final seconds = (clamped % 60).toString().padLeft(2, '0');
+    return '$minutes:$seconds';
+  }
+
+  void _startSearchCycleCountdown({DateTime? startedAt}) {
+    final start = startedAt ?? DateTime.now();
+    final elapsed = DateTime.now().difference(start).inSeconds;
+    final remaining = (30 * 60) - elapsed;
+
+    _searchTimeoutTimer?.cancel();
+    _searchCountdownTicker?.cancel();
+
+    if (!mounted) {
+      return;
+    }
+
+    if (remaining <= 0) {
+      setState(() {
+        _searchStartTime = start;
+        _searchRemainingSeconds = 0;
+        _searchTimedOut = true;
+      });
+      return;
+    }
+
+    setState(() {
+      _searchStartTime = start;
+      _searchRemainingSeconds = remaining;
+      _searchTimedOut = false;
+    });
+
+    _searchTimeoutTimer = Timer(Duration(seconds: remaining), () {
+      if (!mounted) return;
+      setState(() {
+        _searchRemainingSeconds = 0;
+        _searchTimedOut = true;
+      });
+    });
+
+    _searchCountdownTicker = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+      final updatedRemaining = (30 * 60) - DateTime.now().difference(start).inSeconds;
+      if (updatedRemaining <= 0) {
+        timer.cancel();
+        setState(() {
+          _searchRemainingSeconds = 0;
+          _searchTimedOut = true;
+        });
+      } else {
+        setState(() {
+          _searchRemainingSeconds = updatedRemaining;
+        });
+      }
+    });
+  }
+
+  void _stopSearchCycleCountdown({bool clearStartTime = false}) {
+    _searchTimeoutTimer?.cancel();
+    _searchCountdownTicker?.cancel();
+    if (!mounted) return;
+    setState(() {
+      if (clearStartTime) {
+        _searchStartTime = null;
+      }
+      _searchRemainingSeconds = 30 * 60;
+      _searchTimedOut = false;
+    });
   }
 
   Future<void> _loadPreferredServiceType() async {
@@ -566,17 +649,9 @@ class _CustomerScreenState extends State<CustomerScreen> {
         _activeServiceType = _serviceType;
         _towStep = 4;
         _flowStep = 4;
-        _searchStartTime = DateTime.now();
-        _searchTimedOut = false;
+        _shareDialogShownForCurrentTimeout = false;
       });
-
-      // Setup 30-minute timeout timer
-      _searchTimeoutTimer?.cancel();
-      _searchTimeoutTimer = Timer(const Duration(minutes: 30), () {
-        if (mounted && (_activeRequestStatus == 'pending' || _activeRequestStatus == 'paid')) {
-          setState(() => _searchTimedOut = true);
-        }
-      });
+      _startSearchCycleCountdown();
 
       _showSuccessSnackBar(
         _serviceType == _serviceTypeMechanic
@@ -629,18 +704,9 @@ class _CustomerScreenState extends State<CustomerScreen> {
       _isSearchingBoosters = true;
       _flowStep = 4;
       _noProvidersFound = false;
-      _searchStartTime = DateTime.now();
-      _searchTimedOut = false;
-    
-        // Setup 30-minute timeout timer
-        _searchTimeoutTimer?.cancel();
-        _searchTimeoutTimer = Timer(const Duration(minutes: 30), () {
-          if (mounted && _isSearchingBoosters) {
-            setState(() => _searchTimedOut = true);
-          }
-        });
-    
+      _shareDialogShownForCurrentTimeout = false;
     });
+    _startSearchCycleCountdown();
     await _searchNearbyBoosters();
     if (!mounted) return;
 
@@ -714,7 +780,9 @@ class _CustomerScreenState extends State<CustomerScreen> {
           _activeDriverId = driverId;
           _activeServiceType = _serviceTypeBoost;
           _flowStep = 4;
+          _shareDialogShownForCurrentTimeout = false;
         });
+        _startSearchCycleCountdown();
         _showSuccessSnackBar(
           'Payment confirmed. Request sent and waiting for provider acceptance.',
         );
@@ -843,6 +911,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
       }
 
       if (snapshot.docs.isEmpty) {
+        _stopSearchCycleCountdown(clearStartTime: true);
         setState(() {
           _activeRequestId = null;
           _activeRequestStatus = null;
@@ -859,6 +928,9 @@ class _CustomerScreenState extends State<CustomerScreen> {
       final requestPickupAddress = data['pickupAddress']?.toString();
       final requestPickupLat = (data['pickupLatitude'] as num?)?.toDouble();
       final requestPickupLng = (data['pickupLongitude'] as num?)?.toDouble();
+      final paidAtTimestamp = data['paidAt'] as Timestamp?;
+      final createdTimestamp = data['timestamp'] as Timestamp?;
+      final cycleStart = (paidAtTimestamp ?? createdTimestamp)?.toDate();
 
       setState(() {
         _activeRequestId = doc.id;
@@ -880,15 +952,18 @@ class _CustomerScreenState extends State<CustomerScreen> {
         }
       });
 
+      if (newStatus == 'pending' || newStatus == 'paid') {
+        _startSearchCycleCountdown(startedAt: cycleStart);
+      } else {
+        _stopSearchCycleCountdown(clearStartTime: true);
+      }
+
       if ((newStatus == 'accepted' || newStatus == 'en_route') &&
           prevStatus != newStatus &&
           _activeDriverId != null) {
-        _searchTimeoutTimer?.cancel();
         setState(() {
           _isSearchingBoosters = false;
-          _searchTimedOut = false;
           _resendAttempts = 0;
-          _searchStartTime = null;
         });
         _notifyProviderEta(_activeDriverId!);
       }
@@ -1759,6 +1834,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
     final hasProvider = _activeDriverId != null &&
         (status == 'accepted' || status == 'en_route' || status == 'paid' || status == 'completed');
     final isCompleted = status == 'completed';
+    final showCountdown = (_isSearchWindowStatus || _isSearchingBoosters) && !_searchTimedOut;
 
     // ── No providers found ───────────────────────────────────────────────────
     if (_noProvidersFound) {
@@ -1838,8 +1914,53 @@ class _CustomerScreenState extends State<CustomerScreen> {
 
     // ── Searching animation ──────────────────────────────────────────────────
     if (_isSearchingBoosters && !hasProvider) {
+            // Second timeout cycle - prompt app sharing after resend cycle also times out.
+            if (_searchTimedOut && _resendAttempts >= 1 && !_shareDialogShownForCurrentTimeout) {
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (!mounted) return;
+                setState(() {
+                  _shareDialogShownForCurrentTimeout = true;
+                });
+                showDialog(
+                  context: context,
+                  builder: (ctx) => AlertDialog(
+                    title: const Text('No Providers Available'),
+                    content: const Text(
+                      'We could not find available providers after searching twice. '
+                      'Help grow our network by sharing Boosstter with friends and family!',
+                    ),
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.pop(ctx),
+                        child: const Text('Not Now'),
+                      ),
+                      ElevatedButton.icon(
+                        icon: const Icon(Icons.share),
+                        label: const Text('Share App'),
+                        onPressed: () {
+                          Navigator.pop(ctx);
+                          const txt =
+                              'Need a battery boost? Try Boosstter - the on-demand battery boost app!\n\n'
+                              'Download on the App Store or Google Play:\nhttps://boosstter.app/download';
+                          Clipboard.setData(const ClipboardData(text: txt));
+                          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                            content: Text('Share text copied! Paste it anywhere to share.'),
+                            behavior: SnackBarBehavior.floating,
+                          ));
+                        },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF5500FF),
+                          foregroundColor: Colors.white,
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              });
+            }
+
             // Timeout state with Resend & Cancel buttons
-            if (_searchTimedOut && _resendAttempts > 0) {
+            if (_searchTimedOut) {
               return Container(
                 color: const Color(0xFFF3F3F7),
                 child: SafeArea(
@@ -1866,10 +1987,20 @@ class _CustomerScreenState extends State<CustomerScreen> {
                           ),
                           const SizedBox(height: 10),
                           Text(
-                            'We\'re still searching for available providers. You can try again or cancel this request.',
+                            _resendAttempts == 0
+                                ? 'The 30-minute search cycle ended without a provider response. You can resend or cancel this request.'
+                                : 'The resent cycle ended too. You can resend again or cancel this request.',
                             style: Theme.of(context).textTheme.bodyLarge
                                 ?.copyWith(color: const Color(0xFF666A7A)),
                             textAlign: TextAlign.center,
+                          ),
+                          const SizedBox(height: 10),
+                          Text(
+                            'Countdown: ${_formatCountdown(_searchRemainingSeconds)}',
+                            style: const TextStyle(
+                              fontWeight: FontWeight.w700,
+                              color: Color(0xFF0F172A),
+                            ),
                           ),
                           const SizedBox(height: 32),
                           SizedBox(
@@ -1883,14 +2014,9 @@ class _CustomerScreenState extends State<CustomerScreen> {
                                   _isSearchingBoosters = true;
                                   _searchTimedOut = false;
                                   _resendAttempts++;
-                                  _searchStartTime = DateTime.now();
-                                  _searchTimeoutTimer?.cancel();
-                                  _searchTimeoutTimer = Timer(const Duration(minutes: 30), () {
-                                    if (mounted && _isSearchingBoosters) {
-                                      setState(() => _searchTimedOut = true);
-                                    }
-                                  });
+                                  _shareDialogShownForCurrentTimeout = false;
                                 });
+                                _startSearchCycleCountdown();
                               },
                               style: ElevatedButton.styleFrom(
                                 backgroundColor: const Color(0xFF5500FF),
@@ -1909,10 +2035,10 @@ class _CustomerScreenState extends State<CustomerScreen> {
                                   _isSearchingBoosters = false;
                                   _searchTimedOut = false;
                                   _resendAttempts = 0;
-                                  _searchStartTime = null;
-                                  _searchTimeoutTimer?.cancel();
+                                  _shareDialogShownForCurrentTimeout = false;
                                   _flowStep = 1;
                                 });
+                                _stopSearchCycleCountdown(clearStartTime: true);
                               },
                               style: OutlinedButton.styleFrom(
                                 padding: const EdgeInsets.symmetric(vertical: 16),
@@ -1929,49 +2055,6 @@ class _CustomerScreenState extends State<CustomerScreen> {
                   ),
                 ),
               );
-            }
-
-            // Second timeout - show App Store share popup
-            if (_searchTimedOut && _resendAttempts > 1) {
-              WidgetsBinding.instance.addPostFrameCallback((_) {
-                if (mounted) {
-                  showDialog(
-                    context: context,
-                    builder: (ctx) => AlertDialog(
-                      title: const Text('No Providers Available'),
-                      content: const Text(
-                        'We couldn\'t find available providers after searching twice. '
-                        'Help grow our network by sharing Boosstter with friends and family!',
-                      ),
-                      actions: [
-                        TextButton(
-                          onPressed: () => Navigator.pop(ctx),
-                          child: const Text('Not Now'),
-                        ),
-                        ElevatedButton.icon(
-                          icon: const Icon(Icons.share),
-                          label: const Text('Share App'),
-                          onPressed: () {
-                            Navigator.pop(ctx);
-                            const txt =
-                                '🔋 Need a battery boost? Try Boosstter — the on-demand battery boost app!\n\n'
-                                'Download on the App Store or Google Play:\nhttps://boosstter.app/download';
-                            Clipboard.setData(const ClipboardData(text: txt));
-                            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                              content: Text('Share text copied! Paste it anywhere to share.'),
-                              behavior: SnackBarBehavior.floating,
-                            ));
-                          },
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFF5500FF),
-                            foregroundColor: Colors.white,
-                          ),
-                        ),
-                      ],
-                    ),
-                  );
-                }
-              });
             }
 
             // Normal searching state - keep searching
@@ -2008,6 +2091,17 @@ class _CustomerScreenState extends State<CustomerScreen> {
                       ?.copyWith(color: const Color(0xFF0EA5E9), fontWeight: FontWeight.w600),
                     textAlign: TextAlign.center,
                   ),
+                  if (showCountdown) ...[
+                    const SizedBox(height: 10),
+                    Text(
+                      'Time remaining in this cycle: ${_formatCountdown(_searchRemainingSeconds)}',
+                      style: const TextStyle(
+                        color: Color(0xFF0F172A),
+                        fontWeight: FontWeight.w700,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                  ],
                   const SizedBox(height: 28),
                   const CircularProgressIndicator(color: Color(0xFF5500FF)),
                 ],
@@ -2115,6 +2209,37 @@ class _CustomerScreenState extends State<CustomerScreen> {
                       ),
                     ],
                   ),
+                ),
+                if (showCountdown) ...[
+                  const SizedBox(height: 12),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFEFF6FF),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: const Color(0xFFBFDBFE)),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.timer, size: 20, color: Color(0xFF1D4ED8)),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            '30-minute cycle remaining: ${_formatCountdown(_searchRemainingSeconds)}',
+                            style: const TextStyle(
+                              color: Color(0xFF1E3A8A),
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 12),
+                _RequestStatusFlow(
+                  currentStatus: status,
+                  serviceType: activeService,
                 ),
                 const SizedBox(height: 16),
                 if (_providerDisplayName != null)
@@ -3563,6 +3688,111 @@ class _InfoTile extends StatelessWidget {
               ],
             ),
           ),
+        ],
+      ),
+    );
+  }
+}
+
+class _RequestStatusFlow extends StatelessWidget {
+  const _RequestStatusFlow({
+    required this.currentStatus,
+    required this.serviceType,
+  });
+
+  final String currentStatus;
+  final String serviceType;
+
+  static const List<String> _orderedStatuses = <String>[
+    'paid',
+    'accepted',
+    'en_route',
+    'completed',
+  ];
+
+  int _currentIndex() {
+    if (currentStatus == 'pending' || currentStatus == 'awaiting_payment') {
+      return 0;
+    }
+    final idx = _orderedStatuses.indexOf(currentStatus);
+    return idx < 0 ? 0 : idx;
+  }
+
+  String _labelFor(String status) {
+    final isTow = serviceType == _serviceTypeTow;
+    final isMechanic = serviceType == _serviceTypeMechanic;
+    switch (status) {
+      case 'paid':
+        return 'Payment Confirmed';
+      case 'accepted':
+        return isTow
+            ? 'Tow Operator Accepted'
+            : isMechanic
+                ? 'Mechanic Accepted'
+                : 'Provider Accepted';
+      case 'en_route':
+        return isTow
+            ? 'Tow Operator En Route'
+            : isMechanic
+                ? 'Mechanic En Route'
+                : 'Provider En Route';
+      case 'completed':
+        return isTow
+            ? 'Tow Completed'
+            : isMechanic
+                ? 'Mechanic Service Completed'
+                : 'Boost Completed';
+      default:
+        return status;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final activeIndex = _currentIndex();
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFE1E2EA)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Tracking Flow',
+            style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16),
+          ),
+          const SizedBox(height: 10),
+          ...List<Widget>.generate(_orderedStatuses.length, (index) {
+            final status = _orderedStatuses[index];
+            final reached = index <= activeIndex;
+            final isCurrent = _orderedStatuses[activeIndex] == status;
+            return Padding(
+              padding: EdgeInsets.only(bottom: index == _orderedStatuses.length - 1 ? 0 : 10),
+              child: Row(
+                children: [
+                  Icon(
+                    reached ? Icons.check_circle : Icons.radio_button_unchecked,
+                    size: 20,
+                    color: reached ? const Color(0xFF16A34A) : const Color(0xFF9CA3AF),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      _labelFor(status),
+                      style: TextStyle(
+                        fontWeight: isCurrent ? FontWeight.w700 : FontWeight.w500,
+                        color: reached ? const Color(0xFF0F172A) : const Color(0xFF6B7280),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          }),
         ],
       ),
     );
