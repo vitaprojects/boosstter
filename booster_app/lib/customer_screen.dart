@@ -2155,6 +2155,100 @@ class _CustomerScreenState extends State<CustomerScreen> {
     final isCompleted = status == 'completed';
     final showCountdown = (_isSearchWindowStatus || _isSearchingBoosters) && !_searchTimedOut;
 
+    if (status == 'cancelled') {
+      return Container(
+        color: const Color(0xFFF3F3F7),
+        child: SafeArea(
+          child: Center(
+            child: Padding(
+              padding: const EdgeInsets.all(28),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Container(
+                    width: 88,
+                    height: 88,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFEE2E2),
+                      borderRadius: BorderRadius.circular(28),
+                    ),
+                    child: const Icon(
+                      Icons.cancel_outlined,
+                      color: Color(0xFFDC2626),
+                      size: 44,
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+                  Text(
+                    'Order Cancelled',
+                    style: Theme.of(context)
+                        .textTheme
+                        .headlineSmall
+                        ?.copyWith(fontWeight: FontWeight.w800),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 10),
+                  Text(
+                    'This transaction has been cancelled. You can return home to start a new request or review past transactions.',
+                    style: Theme.of(context)
+                        .textTheme
+                        .bodyLarge
+                        ?.copyWith(color: const Color(0xFF666A7A)),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 30),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      onPressed: _returnToMainPage,
+                      icon: const Icon(Icons.home_outlined),
+                      label: const Text(
+                        'Back to Home',
+                        style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+                      ),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF5500FF),
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(18),
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      onPressed: () {
+                        Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) => const TransactionTrackingScreen(),
+                          ),
+                        );
+                      },
+                      icon: const Icon(Icons.receipt_long_outlined),
+                      label: const Text(
+                        'View Transactions',
+                        style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+                      ),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                        side: const BorderSide(color: Color(0xFFCCCCCC)),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(18),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
     // ── No providers found ───────────────────────────────────────────────────
     if (_noProvidersFound) {
       return Container(
@@ -2739,6 +2833,8 @@ class _CustomerScreenState extends State<CustomerScreen> {
 
   Color _statusColor(String status) {
     switch (status) {
+      case 'cancelled':
+        return const Color(0xFFDC2626);
       case 'accepted':
       case 'en_route':
         return const Color(0xFF0EA5E9);
@@ -2755,6 +2851,8 @@ class _CustomerScreenState extends State<CustomerScreen> {
 
   IconData _statusIcon(String status) {
     switch (status) {
+      case 'cancelled':
+        return Icons.cancel_outlined;
       case 'accepted':
         return Icons.handshake_outlined;
       case 'en_route':
@@ -2782,6 +2880,8 @@ class _CustomerScreenState extends State<CustomerScreen> {
         return 'Payment Received – Waiting for Provider Acceptance';
       case 'expired':
         return 'Request Expired – Resend or Cancel';
+      case 'cancelled':
+        return 'Request Cancelled';
       case 'accepted':
         return isTow
             ? 'Tow Operator Accepted – On the Way'
