@@ -47,7 +47,7 @@ class ExplainerScreen extends StatelessWidget {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          'Dead battery? Flat tire? Need a tow?',
+                          'Dead battery? Flat tire? Need a tow or mechanic?',
                           style:
                               Theme.of(context).textTheme.titleLarge?.copyWith(
                                     fontWeight: FontWeight.w700,
@@ -80,7 +80,7 @@ class ExplainerScreen extends StatelessWidget {
                         ),
                         const SizedBox(height: 8),
                         Text(
-                          'Need a Boost or Tow?',
+                          'Need a Boost, Tow, or Mobile Mechanic Service?',
                           style:
                               Theme.of(context).textTheme.titleMedium?.copyWith(
                                     fontWeight: FontWeight.w700,
@@ -88,7 +88,7 @@ class ExplainerScreen extends StatelessWidget {
                         ),
                         const SizedBox(height: 10),
                         Text(
-                          'Stuck with a dead battery? Car won\'t start? Need a tow fast? Open the app and request help in minutes.',
+                          'Stuck with a dead battery? Car won\'t start? Need a tow fast or quick mechanical support? Open the app and request help in minutes.',
                           style:
                               Theme.of(context).textTheme.bodyLarge?.copyWith(
                                     color: const Color(0xFF5F6272),
@@ -96,7 +96,7 @@ class ExplainerScreen extends StatelessWidget {
                         ),
                         const SizedBox(height: 8),
                         Text(
-                          'A nearby helper can come give you a jump-start or provide towing assistance if available. You can request help for yourself, a friend, a family member, or anyone stranded on the road.',
+                          'A nearby helper can come give you a jump-start, provide towing assistance, or offer mobile mechanic service if available. You can request help for yourself, a friend, a family member, or anyone stranded on the road.',
                           style:
                               Theme.of(context).textTheme.bodyLarge?.copyWith(
                                     color: const Color(0xFF5F6272),
@@ -127,7 +127,7 @@ class ExplainerScreen extends StatelessWidget {
                         ),
                         const SizedBox(height: 14),
                         const _StepRow(index: 1, text: 'Open the app'),
-                        const _StepRow(index: 2, text: 'Get a Boost Or Tow service'),
+                        const _StepRow(index: 2, text: 'Get a Boost, Tow, or Mobile Mechanic service'),
                         const _StepRow(index: 3, text: 'Share your location'),
                         const _StepRow(
                           index: 4,
