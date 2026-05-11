@@ -10,6 +10,7 @@ import 'project_flow_checkpoint.dart';
 import 'boost_metrics_screen.dart';
 import 'transaction_tracking_screen.dart';
 import 'profile_settings_screen.dart';
+import 'help_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -21,6 +22,12 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   bool _isSelecting = false;
   int _selectedTabIndex = 0;
+
+  static const String _moreProfileSettings = 'profile_settings';
+  static const String _moreBoostMetrics = 'boost_metrics';
+  static const String _moreTransactionHistory = 'transaction_history';
+  static const String _moreFlowCheckpoint = 'flow_checkpoint';
+  static const String _moreSignOut = 'sign_out';
 
   static const List<_MainTabVisual> _mainTabs = <_MainTabVisual>[
     _MainTabVisual(
@@ -39,9 +46,9 @@ class _HomeScreenState extends State<HomeScreen> {
       activeIcon: Icons.receipt_long,
     ),
     _MainTabVisual(
-      label: 'Profile',
-      icon: Icons.person_outline,
-      activeIcon: Icons.person,
+      label: 'Help',
+      icon: Icons.help_outline,
+      activeIcon: Icons.help,
     ),
   ];
 
@@ -123,6 +130,45 @@ class _HomeScreenState extends State<HomeScreen> {
     Navigator.of(context).push(
       MaterialPageRoute(builder: (_) => const CustomerScreen()),
     );
+  }
+
+  Future<void> _signOutAndExit() async {
+    await FirebaseAuth.instance.signOut();
+    if (!mounted) return;
+    Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute(builder: (_) => const LoginScreen()),
+      (route) => false,
+    );
+  }
+
+  Future<void> _openMoreAction(String action) async {
+    switch (action) {
+      case _moreProfileSettings:
+        Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => const ProfileSettingsScreen()),
+        );
+        break;
+      case _moreBoostMetrics:
+        Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => const BoostMetricsScreen()),
+        );
+        break;
+      case _moreTransactionHistory:
+        Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => const TransactionTrackingScreen()),
+        );
+        break;
+      case _moreFlowCheckpoint:
+        Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => const FlowCheckpointScreen()),
+        );
+        break;
+      case _moreSignOut:
+        await _signOutAndExit();
+        break;
+      default:
+        break;
+    }
   }
 
   Future<void> _setRoleForCurrentUser(
@@ -230,18 +276,24 @@ class _HomeScreenState extends State<HomeScreen> {
           },
         );
       case 3:
-        return _ProfileTab(
-          onLogout: () async {
-            await FirebaseAuth.instance.signOut();
-            if (!mounted) return;
-            Navigator.of(context).pushAndRemoveUntil(
-              MaterialPageRoute(builder: (_) => const LoginScreen()),
-              (route) => false,
-            );
-          },
-        );
+        return const HelpScreen();
       default:
         return const SizedBox.shrink();
+    }
+  }
+
+  String _titleForTab(int index) {
+    switch (index) {
+      case 0:
+        return 'Home';
+      case 1:
+        return 'Requests';
+      case 2:
+        return 'Orders';
+      case 3:
+        return 'Help';
+      default:
+        return 'Booster';
     }
   }
 
@@ -249,6 +301,38 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget build(BuildContext context) {
     final tabs = _tabs;
     return Scaffold(
+      appBar: AppBar(
+        title: Text(_titleForTab(_selectedTabIndex)),
+        actions: [
+          PopupMenuButton<String>(
+            tooltip: 'More',
+            icon: const Icon(Icons.more_vert),
+            onSelected: _openMoreAction,
+            itemBuilder: (context) => const [
+              PopupMenuItem<String>(
+                value: _moreProfileSettings,
+                child: Text('Profile Settings'),
+              ),
+              PopupMenuItem<String>(
+                value: _moreBoostMetrics,
+                child: Text('Boost Metrics'),
+              ),
+              PopupMenuItem<String>(
+                value: _moreTransactionHistory,
+                child: Text('Transaction History'),
+              ),
+              PopupMenuItem<String>(
+                value: _moreFlowCheckpoint,
+                child: Text('Flow Checkpoint'),
+              ),
+              PopupMenuItem<String>(
+                value: _moreSignOut,
+                child: Text('Sign out'),
+              ),
+            ],
+          ),
+        ],
+      ),
       body: _buildBody(),
       bottomNavigationBar: MediaQuery.removePadding(
         context: context,
@@ -508,43 +592,6 @@ class _OrdersTab extends StatelessWidget {
       onAction: onOpenOrders,
       secondaryActionLabel: 'Open Transaction History',
       onSecondaryAction: onOpenTransactions,
-    );
-  }
-}
-
-class _ProfileTab extends StatelessWidget {
-  const _ProfileTab({required this.onLogout});
-
-  final VoidCallback onLogout;
-
-  @override
-  Widget build(BuildContext context) {
-    return _InfoTab(
-      title: 'Profile',
-      subtitle:
-          'Manage your account, configure provider services/prices, inspect metrics, and sign out.',
-      icon: Icons.person,
-      accent: const Color(0xFFFFD60A),
-      actionLabel: 'Service Types & Pricing',
-      onAction: () {
-        Navigator.of(context).push(
-          MaterialPageRoute(builder: (_) => const ProfileSettingsScreen()),
-        );
-      },
-      secondaryActionLabel: 'Open Boost Metrics',
-      onSecondaryAction: () {
-        Navigator.of(context).push(
-          MaterialPageRoute(builder: (_) => const BoostMetricsScreen()),
-        );
-      },
-      tertiaryActionLabel: 'Flow Checkpoint',
-      onTertiaryAction: () {
-        Navigator.of(context).push(
-          MaterialPageRoute(builder: (_) => const FlowCheckpointScreen()),
-        );
-      },
-      quaternaryActionLabel: 'Sign out',
-      onQuaternaryAction: onLogout,
     );
   }
 }
