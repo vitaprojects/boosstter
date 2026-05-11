@@ -83,10 +83,11 @@ class _CustomerScreenState extends State<CustomerScreen> {
   int _expiredAutoReturnSeconds = 0;
   bool _shareDialogShownForCurrentTimeout = false;
   bool get _isWaitingForBooster {
-    return _activeRequestStatus == 'pending' ||
+    return _activeServiceType == _serviceTypeBoost &&
+      (_activeRequestStatus == 'pending' ||
         _activeRequestStatus == 'paid' ||
         _activeRequestStatus == 'accepted' ||
-        _activeRequestStatus == 'en_route';
+      _activeRequestStatus == 'en_route');
   }
 
   bool get _isSearchWindowStatus {
@@ -1423,10 +1424,17 @@ class _CustomerScreenState extends State<CustomerScreen> {
         _activeServiceType = data['serviceType']?.toString();
         _activeCreditedAmountCents = (data['creditedAmountCents'] as num?)?.toInt() ?? 0;
         _activeRefundRequestStatus = (data['refundRequestStatus'] ?? 'none').toString();
-        // Keep the screen service context aligned with the active request.
-        if (_activeServiceType == _serviceTypeBoost ||
+        final isActiveStatus = newStatus == 'pending' ||
+          newStatus == 'awaiting_payment' ||
+          newStatus == 'paid' ||
+          newStatus == 'accepted' ||
+          newStatus == 'en_route';
+
+        // Align tab context only for active requests to keep completed/expired services independent.
+        if (isActiveStatus &&
+          (_activeServiceType == _serviceTypeBoost ||
             _activeServiceType == _serviceTypeTow ||
-            _activeServiceType == _serviceTypeMechanic) {
+            _activeServiceType == _serviceTypeMechanic)) {
           _serviceType = _activeServiceType!;
         }
         _pickupAddress = _pickupAddress ?? requestPickupAddress;
@@ -1870,12 +1878,13 @@ class _CustomerScreenState extends State<CustomerScreen> {
   }
 
   Widget _buildBoostFlow(BuildContext context) {
-    final hasActiveBoostRequest = _isWaitingForBooster ||
+    final hasActiveBoostRequest = _activeServiceType == _serviceTypeBoost &&
+      (_isWaitingForBooster ||
         _activeRequestStatus == 'paid' ||
         _activeRequestStatus == 'expired' ||
         _activeRequestStatus == 'accepted' ||
         _activeRequestStatus == 'en_route' ||
-        _activeRequestStatus == 'completed';
+        _activeRequestStatus == 'completed');
 
     // ── Step 4: Tracking ──────────────────────────────────────────────────
     if (_flowStep == 4 || hasActiveBoostRequest) {
