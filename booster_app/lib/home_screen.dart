@@ -8,6 +8,7 @@ import 'driver_screen.dart';
 import 'explainer_screen.dart';
 import 'project_flow_checkpoint.dart';
 import 'boost_metrics_screen.dart';
+import 'transaction_tracking_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -100,7 +101,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final snapshot = await FirebaseFirestore.instance
         .collection('requests')
         .where('customerId', isEqualTo: user.uid)
-      .where('status', whereIn: ['pending', 'awaiting_payment', 'paid', 'expired', 'accepted', 'en_route'])
+      .where('status', whereIn: ['pending', 'awaiting_payment', 'paid', 'accepted', 'en_route'])
         .limit(1)
         .get();
 
@@ -204,11 +205,12 @@ class _HomeScreenState extends State<HomeScreen> {
       case 1:
         return _RequestsTab(onOpenDriverMode: _openRequestsTab);
       case 2:
-        return const _InfoTab(
-          title: 'Orders NEW',
-          subtitle: 'Order tracking UI will be restored next. Current build keeps this tab visible to match your prior layout.',
-          icon: Icons.radar,
-          accent: Color(0xFF00E5FF),
+        return _OrdersTab(
+          onOpenTransactions: () {
+            Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const TransactionTrackingScreen()),
+            );
+          },
         );
       case 3:
         return _ProfileTab(
@@ -458,6 +460,25 @@ class _RequestsTab extends StatelessWidget {
       accent: const Color(0xFFEA3DFF),
       actionLabel: 'Open Provider Mode',
       onAction: onOpenDriverMode,
+    );
+  }
+}
+
+class _OrdersTab extends StatelessWidget {
+  const _OrdersTab({required this.onOpenTransactions});
+
+  final VoidCallback onOpenTransactions;
+
+  @override
+  Widget build(BuildContext context) {
+    return _InfoTab(
+      title: 'Orders',
+      subtitle:
+          'Track active, expired, cancelled, and completed customer requests in one place.',
+      icon: Icons.radar,
+      accent: const Color(0xFF00E5FF),
+      actionLabel: 'Open Transaction Tracking',
+      onAction: onOpenTransactions,
     );
   }
 }

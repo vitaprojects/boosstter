@@ -11,6 +11,7 @@ import 'login_screen.dart';
 import 'paywall_screen.dart';
 import 'review_screen.dart';
 import 'stripe_payment_service.dart';
+import 'transaction_tracking_screen.dart';
 
 class CustomerScreen extends StatefulWidget {
   const CustomerScreen({super.key});
@@ -71,14 +72,15 @@ class _CustomerScreenState extends State<CustomerScreen> {
   DateTime? _searchStartTime;
   Timer? _searchTimeoutTimer;
   Timer? _searchCountdownTicker;
+  Timer? _expiredAutoReturnTimer;
   bool _searchTimedOut = false;
   int _resendAttempts = 0;
   int _searchRemainingSeconds = 30 * 60;
+  int _expiredAutoReturnSeconds = 0;
   bool _shareDialogShownForCurrentTimeout = false;
   bool get _isWaitingForBooster {
     return _activeRequestStatus == 'pending' ||
         _activeRequestStatus == 'paid' ||
-      _activeRequestStatus == 'expired' ||
         _activeRequestStatus == 'accepted' ||
         _activeRequestStatus == 'en_route';
   }
@@ -103,6 +105,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
     _towNotesController.dispose();
     _searchTimeoutTimer?.cancel();
     _searchCountdownTicker?.cancel();
+    _expiredAutoReturnTimer?.cancel();
     super.dispose();
   }
 
@@ -175,6 +178,48 @@ class _CustomerScreenState extends State<CustomerScreen> {
       _searchTimedOut = false;
       _searchTimeoutPersistedForCurrentCycle = false;
     });
+  }
+
+  void _startExpiredAutoReturnCountdown() {
+    _expiredAutoReturnTimer?.cancel();
+    if (!mounted) return;
+
+    setState(() {
+      _expiredAutoReturnSeconds = 20;
+    });
+
+    _expiredAutoReturnTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+
+      if (_expiredAutoReturnSeconds <= 1) {
+        timer.cancel();
+        _returnToMainPage();
+        return;
+      }
+
+      setState(() {
+        _expiredAutoReturnSeconds -= 1;
+      });
+    });
+  }
+
+  void _stopExpiredAutoReturnCountdown() {
+    _expiredAutoReturnTimer?.cancel();
+    if (!mounted) return;
+    setState(() {
+      _expiredAutoReturnSeconds = 0;
+    });
+  }
+
+  Future<void> _returnToMainPage() async {
+    _stopExpiredAutoReturnCountdown();
+    if (!mounted) return;
+    if (Navigator.of(context).canPop()) {
+      Navigator.of(context).pop();
+    }
   }
 
   void _handleSearchCycleTimeout() {
@@ -632,7 +677,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
     final activeSnapshot = await FirebaseFirestore.instance
         .collection('requests')
         .where('customerId', isEqualTo: customerId)
-      .where('status', whereIn: ['pending', 'awaiting_payment', 'paid', 'expired', 'accepted', 'en_route'])
+      .where('status', whereIn: ['pending', 'awaiting_payment', 'paid', 'accepted', 'en_route'])
         .limit(1)
         .get();
 
@@ -1091,7 +1136,6 @@ class _CustomerScreenState extends State<CustomerScreen> {
         }
         if (newStatus == 'pending' ||
             newStatus == 'paid' ||
-            newStatus == 'expired' ||
             newStatus == 'accepted' ||
             newStatus == 'en_route') {
           _flowStep = 4;
@@ -1102,6 +1146,12 @@ class _CustomerScreenState extends State<CustomerScreen> {
         _startSearchCycleCountdown(startedAt: cycleStart);
       } else {
         _stopSearchCycleCountdown(clearStartTime: true);
+      }
+
+      if (newStatus == 'expired') {
+        _startExpiredAutoReturnCountdown();
+      } else {
+        _stopExpiredAutoReturnCountdown();
       }
 
       if ((newStatus == 'accepted' || newStatus == 'en_route') &&
@@ -1215,6 +1265,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
       _resendAttempts++;
       _shareDialogShownForCurrentTimeout = false;
     });
+    _stopExpiredAutoReturnCountdown();
     _startSearchCycleCountdown();
 
     await _searchNearbyBoosters();
@@ -1281,6 +1332,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
     final requestId = _activeRequestId;
 
     _stopSearchCycleCountdown(clearStartTime: true);
+    _stopExpiredAutoReturnCountdown();
 
     try {
       if (requestId != null) {
@@ -1462,9 +1514,9 @@ class _CustomerScreenState extends State<CustomerScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final hasActiveOrder = _activeRequestId != null ||
+    final hasActiveOrder = _activeRequestStatus == 'pending' ||
         _activeRequestStatus == 'paid' ||
-      _activeRequestStatus == 'expired' ||
+        _activeRequestStatus == 'expired' ||
         _activeRequestStatus == 'accepted' ||
         _activeRequestStatus == 'en_route' ||
         _activeRequestStatus == 'completed';
@@ -1506,10 +1558,9 @@ class _CustomerScreenState extends State<CustomerScreen> {
   }
 
   Widget _buildBoostFlow(BuildContext context) {
-    final hasActiveBoostRequest = _activeRequestId != null ||
-        _isWaitingForBooster ||
+    final hasActiveBoostRequest = _isWaitingForBooster ||
         _activeRequestStatus == 'paid' ||
-      _activeRequestStatus == 'expired' ||
+        _activeRequestStatus == 'expired' ||
         _activeRequestStatus == 'accepted' ||
         _activeRequestStatus == 'en_route' ||
         _activeRequestStatus == 'completed';
@@ -2227,8 +2278,8 @@ class _CustomerScreenState extends State<CustomerScreen> {
               });
             }
 
-            // Timeout state with Resend & Cancel buttons
-            if (_searchTimedOut) {
+            // Timeout/expired state with Resend & Cancel buttons
+            if (_searchTimedOut || status == 'expired') {
               return Container(
                 color: const Color(0xFFF3F3F7),
                 child: SafeArea(
@@ -2248,20 +2299,33 @@ class _CustomerScreenState extends State<CustomerScreen> {
                           ),
                           const SizedBox(height: 24),
                           Text(
-                            'Search Still Running…',
+                            status == 'expired' ? 'Request Expired' : 'Search Still Running…',
                             style: Theme.of(context).textTheme.headlineSmall
                                 ?.copyWith(fontWeight: FontWeight.w800),
                             textAlign: TextAlign.center,
                           ),
                           const SizedBox(height: 10),
                           Text(
-                            _resendAttempts == 0
-                                ? 'The 30-minute search cycle ended without a provider response. You can resend or cancel this request.'
-                                : 'The resent cycle ended too. You can resend again or cancel this request.',
+                            status == 'expired'
+                                ? 'This particular transaction has expired. You can resend this request or cancel it.'
+                                : _resendAttempts == 0
+                                    ? 'The 30-minute search cycle ended without a provider response. You can resend or cancel this request.'
+                                    : 'The resent cycle ended too. You can resend again or cancel this request.',
                             style: Theme.of(context).textTheme.bodyLarge
                                 ?.copyWith(color: const Color(0xFF666A7A)),
                             textAlign: TextAlign.center,
                           ),
+                          if (status == 'expired' && _expiredAutoReturnSeconds > 0) ...[
+                            const SizedBox(height: 10),
+                            Text(
+                              'Returning to main page in $_expiredAutoReturnSeconds seconds',
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w700,
+                                color: Color(0xFF111827),
+                              ),
+                              textAlign: TextAlign.center,
+                            ),
+                          ],
                           const SizedBox(height: 10),
                           Text(
                             'Countdown: ${_formatCountdown(_searchRemainingSeconds)}',
@@ -2299,6 +2363,17 @@ class _CustomerScreenState extends State<CustomerScreen> {
                               child: const Text('Cancel Request',
                                   style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: Color(0xFF5500FF))),
                             ),
+                          ),
+                          const SizedBox(height: 8),
+                          TextButton(
+                            onPressed: () {
+                              Navigator.of(context).push(
+                                MaterialPageRoute(
+                                  builder: (_) => const TransactionTrackingScreen(),
+                                ),
+                              );
+                            },
+                            child: const Text('View Transactions'),
                           ),
                         ],
                       ),
