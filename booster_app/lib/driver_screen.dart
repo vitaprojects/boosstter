@@ -4,6 +4,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:geolocator/geolocator.dart';
 import 'login_screen.dart';
+import 'customer_screen.dart';
 
 class DriverScreen extends StatefulWidget {
   const DriverScreen({super.key});
@@ -278,19 +279,39 @@ class _DriverScreenState extends State<DriverScreen> {
     }
   }
 
+  Future<void> _openRequestPage() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user != null) {
+      await FirebaseFirestore.instance.collection('users').doc(user.uid).set(
+        {
+          'userId': user.uid,
+          'email': user.email,
+          'role': 'customer',
+          'updatedAt': FieldValue.serverTimestamp(),
+        },
+        SetOptions(merge: true),
+      );
+    }
+    if (!mounted) return;
+    await Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => const CustomerScreen()),
+    );
+  }
+
   // ─── Build ────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF0F172A),
+      backgroundColor: const Color(0xFFF8FAFC),
       appBar: AppBar(
-        backgroundColor: const Color(0xFF1E293B),
+        backgroundColor: Colors.white,
+        elevation: 0,
         title: Text(
           _providerTabIndex == 0 ? 'Order' : 'Requests',
-          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+          style: const TextStyle(color: Color(0xFF0F172A), fontWeight: FontWeight.bold),
         ),
-        iconTheme: const IconThemeData(color: Colors.white),
+        iconTheme: const IconThemeData(color: Color(0xFF0F172A)),
         actions: [
           IconButton(
             icon: const Icon(Icons.logout),
@@ -316,11 +337,19 @@ class _DriverScreenState extends State<DriverScreen> {
           ),
         ],
       ),
-      body: _providerTabIndex == 0 ? _buildOrderPage() : _buildRequestsPage(),
+      body: _buildOrderPage(),
       bottomNavigationBar: NavigationBar(
+        backgroundColor: Colors.white,
+        indicatorColor: const Color(0xFF8B5CF6).withValues(alpha: 0.18),
         selectedIndex: _providerTabIndex,
-        onDestinationSelected: (index) {
-          setState(() => _providerTabIndex = index);
+        onDestinationSelected: (index) async {
+          if (index == 1) {
+            await _openRequestPage();
+            if (!mounted) return;
+            setState(() => _providerTabIndex = 0);
+            return;
+          }
+          setState(() => _providerTabIndex = 0);
         },
         destinations: const [
           NavigationDestination(
@@ -347,9 +376,9 @@ class _DriverScreenState extends State<DriverScreen> {
         Container(
           padding: const EdgeInsets.all(16),
           decoration: BoxDecoration(
-            color: const Color(0xFF111827),
+            color: Colors.white,
             borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: Colors.white12),
+            border: Border.all(color: const Color(0xFFE5E7EB)),
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -357,7 +386,7 @@ class _DriverScreenState extends State<DriverScreen> {
               const Text(
                 'Transaction Summary',
                 style: TextStyle(
-                  color: Colors.white,
+                  color: Color(0xFF0F172A),
                   fontWeight: FontWeight.w800,
                   fontSize: 15,
                 ),
@@ -365,17 +394,17 @@ class _DriverScreenState extends State<DriverScreen> {
               const SizedBox(height: 8),
               Text(
                 'Order ID: ${_activeRequestId ?? 'No active order'}',
-                style: const TextStyle(color: Colors.white70, fontSize: 13),
+                style: const TextStyle(color: Color(0xFF334155), fontSize: 13),
               ),
               const SizedBox(height: 4),
               Text(
                 'Status: ${_activeRequestStatus ?? 'idle'}',
-                style: const TextStyle(color: Colors.white70, fontSize: 13),
+                style: const TextStyle(color: Color(0xFF334155), fontSize: 13),
               ),
               const SizedBox(height: 4),
               Text(
                 'Service: ${_activeServiceType == 'tow' ? 'Tow Assistance' : _activeServiceType == 'mobile_mechanic' ? 'Mobile Mechanic' : 'Battery Boost'}',
-                style: const TextStyle(color: Colors.white70, fontSize: 13),
+                style: const TextStyle(color: Color(0xFF334155), fontSize: 13),
               ),
               if ((_activeServiceType == 'tow' || _activeServiceType == 'mobile_mechanic') &&
                   _activeTowReason != null) ...[
@@ -384,7 +413,7 @@ class _DriverScreenState extends State<DriverScreen> {
                   _activeServiceType == 'mobile_mechanic'
                       ? 'Issue Type: $_activeTowReason'
                       : 'Tow Reason: $_activeTowReason',
-                  style: const TextStyle(color: Colors.white70, fontSize: 13),
+                  style: const TextStyle(color: Color(0xFF334155), fontSize: 13),
                 ),
               ],
             ],
@@ -401,15 +430,15 @@ class _DriverScreenState extends State<DriverScreen> {
           Container(
             padding: const EdgeInsets.all(20),
             decoration: BoxDecoration(
-              color: const Color(0xFF1E293B),
+              color: Colors.white,
               borderRadius: BorderRadius.circular(14),
-              border: Border.all(color: Colors.white12),
+              border: Border.all(color: const Color(0xFFE5E7EB)),
             ),
             child: Text(
               _isAvailable
                   ? 'No active orders right now. Keep Requests tab open to catch new jobs quickly.'
                   : 'Go available to start receiving new orders.',
-              style: const TextStyle(color: Colors.white70),
+              style: const TextStyle(color: Color(0xFF475569)),
             ),
           ),
         ],
@@ -443,12 +472,12 @@ class _DriverScreenState extends State<DriverScreen> {
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
-        color: const Color(0xFF1E293B),
+        color: Colors.white,
         borderRadius: BorderRadius.circular(16),
         border: Border.all(
           color: _isAvailable
               ? const Color(0xFF22C55E).withValues(alpha: 0.5)
-              : Colors.grey.withValues(alpha: 0.2),
+              : const Color(0xFFE5E7EB),
         ),
       ),
       child: Row(
@@ -476,7 +505,7 @@ class _DriverScreenState extends State<DriverScreen> {
                 Text(
                   _isAvailable ? 'Available for Boosts' : 'Currently Offline',
                   style: TextStyle(
-                    color: _isAvailable ? const Color(0xFF22C55E) : Colors.grey[400],
+                    color: _isAvailable ? const Color(0xFF16A34A) : const Color(0xFF334155),
                     fontWeight: FontWeight.bold,
                     fontSize: 16,
                   ),
@@ -484,12 +513,12 @@ class _DriverScreenState extends State<DriverScreen> {
                 if (_isAvailable && _currentPosition != null)
                   Text(
                     'Location updating every 5s',
-                    style: TextStyle(color: Colors.grey[500], fontSize: 12),
+                    style: const TextStyle(color: Color(0xFF64748B), fontSize: 12),
                   )
                 else
                   Text(
                     'Toggle to start receiving requests',
-                    style: TextStyle(color: Colors.grey[500], fontSize: 12),
+                    style: const TextStyle(color: Color(0xFF64748B), fontSize: 12),
                   ),
               ],
             ),
