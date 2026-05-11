@@ -434,6 +434,7 @@ class _MainServiceHub extends StatelessWidget {
               subtitle:
                   'Request towing assistance and share your pickup details for dispatch.',
               icon: Icons.local_shipping,
+              leading: const _TowTruckBadge(),
               accent: const Color(0xFF0EA5E9),
               cta: 'Request a Tow',
               onTap: isSelecting ? null : onOpenTow,
@@ -466,6 +467,7 @@ class _ServiceChoiceCard extends StatelessWidget {
     required this.icon,
     required this.accent,
     required this.cta,
+    this.leading,
     this.onTap,
   });
 
@@ -474,6 +476,7 @@ class _ServiceChoiceCard extends StatelessWidget {
   final IconData icon;
   final Color accent;
   final String cta;
+  final Widget? leading;
   final VoidCallback? onTap;
 
   @override
@@ -504,7 +507,7 @@ class _ServiceChoiceCard extends StatelessWidget {
                   color: accent.withValues(alpha: 0.12),
                   borderRadius: BorderRadius.circular(14),
                 ),
-                child: Icon(icon, color: accent),
+                child: leading ?? Icon(icon, color: accent),
               ),
               const SizedBox(width: 14),
               Expanded(
@@ -544,6 +547,78 @@ class _ServiceChoiceCard extends StatelessWidget {
       ),
     );
   }
+}
+
+class _TowTruckBadge extends StatelessWidget {
+  const _TowTruckBadge();
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: SizedBox(
+        width: 36,
+        height: 28,
+        child: CustomPaint(
+          painter: _TowTruckPainter(),
+        ),
+      ),
+    );
+  }
+}
+
+class _TowTruckPainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final truck = Paint()..color = const Color(0xFF0284C7);
+    final dark = Paint()..color = const Color(0xFF075985);
+    final wheel = Paint()..color = const Color(0xFF0F172A);
+    final wheelInner = Paint()..color = const Color(0xFFE2E8F0);
+
+    final base = RRect.fromRectAndRadius(
+      Rect.fromLTWH(2, size.height * 0.52, size.width * 0.66, size.height * 0.24),
+      const Radius.circular(4),
+    );
+    canvas.drawRRect(base, truck);
+
+    final cabin = RRect.fromRectAndRadius(
+      Rect.fromLTWH(size.width * 0.52, size.height * 0.34, size.width * 0.28, size.height * 0.34),
+      const Radius.circular(4),
+    );
+    canvas.drawRRect(cabin, dark);
+
+    final armPath = Path()
+      ..moveTo(size.width * 0.48, size.height * 0.5)
+      ..lineTo(size.width * 0.82, size.height * 0.2)
+      ..lineTo(size.width * 0.86, size.height * 0.25)
+      ..lineTo(size.width * 0.52, size.height * 0.56)
+      ..close();
+    canvas.drawPath(armPath, dark);
+
+    final hook = Paint()
+      ..color = const Color(0xFF7DD3FC)
+      ..strokeWidth = 2
+      ..style = PaintingStyle.stroke;
+    canvas.drawLine(
+      Offset(size.width * 0.84, size.height * 0.24),
+      Offset(size.width * 0.84, size.height * 0.42),
+      hook,
+    );
+    canvas.drawArc(
+      Rect.fromCircle(center: Offset(size.width * 0.84, size.height * 0.48), radius: 3),
+      0.1,
+      2.7,
+      false,
+      hook,
+    );
+
+    for (final dx in <double>[size.width * 0.24, size.width * 0.56]) {
+      canvas.drawCircle(Offset(dx, size.height * 0.8), 4.5, wheel);
+      canvas.drawCircle(Offset(dx, size.height * 0.8), 2.1, wheelInner);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
 
 class _RequestsTab extends StatelessWidget {
