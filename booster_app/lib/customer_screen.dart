@@ -36,6 +36,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
   String? _plugType;
   String? _selectedBoostVehicleType;
   String? _selectedBoostPlugType;
+  final TextEditingController _boostProviderNoteController = TextEditingController();
   String? _selectedTowVehicle;
   bool _showTowManualVehicle = false;
   final TextEditingController _towManualVehicleController = TextEditingController();
@@ -104,6 +105,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
   @override
   void dispose() {
     _requestWatchSub?.cancel();
+    _boostProviderNoteController.dispose();
     _towManualVehicleController.dispose();
     _towManualAddressController.dispose();
     _towNotesController.dispose();
@@ -1176,6 +1178,11 @@ class _CustomerScreenState extends State<CustomerScreen> {
         'vehicleType': _vehicleType,
         'towVehicleType': _serviceType == _serviceTypeTow ? _vehicleType : null,
         'plugType': _plugType,
+        'boostProviderNote': _serviceType == _serviceTypeBoost && _plugType != null
+          ? (_boostProviderNoteController.text.trim().isEmpty
+            ? null
+            : _boostProviderNoteController.text.trim())
+          : null,
         'dispatchMode': 'retry_queue',
         'resendAttempts': _resendAttempts,
         'searchTimeoutCount': 0,
@@ -2177,22 +2184,36 @@ class _CustomerScreenState extends State<CustomerScreen> {
                             ?.copyWith(fontWeight: FontWeight.w700),
                       ),
                       const SizedBox(height: 10),
-                      SizedBox(
-                        height: 220,
-                        child: ListView.separated(
-                          scrollDirection: Axis.horizontal,
-                          itemCount: _plugTypes.length,
-                          separatorBuilder: (_, _) => const SizedBox(width: 10),
-                          itemBuilder: (context, index) {
-                            final plugType = _plugTypes[index];
-                            return _PlugTypeCard(
-                              plugType: plugType,
-                              selected: _selectedBoostPlugType == plugType,
-                              onTap: () => setState(() {
-                                _selectedBoostPlugType = plugType;
-                              }),
-                            );
-                          },
+                      GridView.builder(
+                        shrinkWrap: true,
+                        physics: const NeverScrollableScrollPhysics(),
+                        itemCount: _plugTypes.length,
+                        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                          crossAxisCount: 2,
+                          mainAxisSpacing: 10,
+                          crossAxisSpacing: 10,
+                          childAspectRatio: 0.74,
+                        ),
+                        itemBuilder: (context, index) {
+                          final plugType = _plugTypes[index];
+                          return _PlugTypeCard(
+                            plugType: plugType,
+                            selected: _selectedBoostPlugType == plugType,
+                            onTap: () => setState(() {
+                              _selectedBoostPlugType = plugType;
+                            }),
+                          );
+                        },
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: _boostProviderNoteController,
+                        maxLines: 3,
+                        maxLength: 240,
+                        decoration: const InputDecoration(
+                          labelText: 'Note to Provider (Optional)',
+                          hintText: 'Example: Car is in basement level P2 near elevator B',
+                          prefixIcon: Icon(Icons.edit_note),
                         ),
                       ),
                     ],
@@ -5237,6 +5258,8 @@ class _PlugTypeCard extends StatelessWidget {
             const SizedBox(height: 4),
             Text(
               _plugTypeDescription(plugType),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
               style: Theme.of(context)
                   .textTheme
                   .bodySmall
