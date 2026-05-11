@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:flutter/services.dart';
 import 'login_screen.dart';
 import 'customer_screen.dart';
 
@@ -31,6 +32,12 @@ class _DriverScreenState extends State<DriverScreen> {
   String? _activeTowReason;
   StreamSubscription<QuerySnapshot>? _activeJobSub;
   StreamSubscription<QuerySnapshot>? _cancelledJobSub;
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _incomingAlertSub;
+
+  bool _providesBoost = true;
+  bool _providesTow = false;
+  bool _providesMechanic = false;
+  String? _lastAlertedRequestId;
 
   String? _recentCancelledRequestId;
   String? _recentCancelledBy;
@@ -55,6 +62,7 @@ class _DriverScreenState extends State<DriverScreen> {
     _locationTimer?.cancel();
     _activeJobSub?.cancel();
     _cancelledJobSub?.cancel();
+    _incomingAlertSub?.cancel();
     super.dispose();
   }
 
@@ -68,8 +76,13 @@ class _DriverScreenState extends State<DriverScreen> {
         .get();
 
     if (doc.exists && mounted) {
+      final data = doc.data() ?? <String, dynamic>{};
+      final offered = (data['offeredServices'] as Map<String, dynamic>?) ?? <String, dynamic>{};
       setState(() {
-        _isAvailable = doc['isAvailable'] ?? false;
+        _isAvailable = (data['isAvailable'] as bool?) ?? false;
+        _providesBoost = (offered['boost'] as bool?) ?? true;
+        _providesTow = (offered['tow'] as bool?) ?? false;
+        _providesMechanic = (offered['mobile_mechanic'] as bool?) ?? false;
       });
       if (_isAvailable) _startLocationUpdates();
     }
@@ -77,6 +90,65 @@ class _DriverScreenState extends State<DriverScreen> {
     // Re-attach to any in-progress job
     _watchActiveJob();
     _watchRecentCancellation();
+    _watchIncomingOrderAlerts();
+  }
+
+  bool _supportsService(String? serviceType) {
+    switch (serviceType) {
+      case 'tow':
+        return _providesTow;
+      case 'mobile_mechanic':
+        return _providesMechanic;
+      default:
+        return _providesBoost;
+    }
+  }
+
+  String _serviceLabel(String? serviceType) {
+    switch (serviceType) {
+      case 'tow':
+        return 'Tow';
+      case 'mobile_mechanic':
+        return 'Mobile Mechanic';
+      default:
+        return 'Battery Boost';
+    }
+  }
+
+  void _watchIncomingOrderAlerts() {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    _incomingAlertSub?.cancel();
+    _incomingAlertSub = FirebaseFirestore.instance
+        .collection('requests')
+        .where('driverId', isEqualTo: user.uid)
+        .where('status', isEqualTo: 'paid')
+        .orderBy('timestamp', descending: true)
+        .limit(1)
+        .snapshots()
+        .listen((snapshot) {
+      if (!mounted || snapshot.docs.isEmpty) return;
+
+      final doc = snapshot.docs.first;
+      final serviceType = doc.data()['serviceType']?.toString();
+      if (!_supportsService(serviceType)) {
+        return;
+      }
+
+      if (_lastAlertedRequestId == doc.id) {
+        return;
+      }
+
+      _lastAlertedRequestId = doc.id;
+      SystemSound.play(SystemSoundType.alert);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('New ${_serviceLabel(serviceType)} request available near you.'),
+          duration: const Duration(seconds: 3),
+        ),
+      );
+    });
   }
 
   void _watchActiveJob() {
@@ -443,6 +515,30 @@ class _DriverScreenState extends State<DriverScreen> {
           ),
         ],
         const SizedBox(height: 16),
+        Text(
+          'Pending Request Orders',
+          style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                color: const Color(0xFF0F172A),
+                fontWeight: FontWeight.w800,
+              ),
+        ),
+        const SizedBox(height: 10),
+        if (_isAvailable)
+          _buildIncomingRequestsList()
+        else
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: const Color(0xFFE5E7EB)),
+            ),
+            child: const Text(
+              'Go available to view pending request orders in your area.',
+              style: TextStyle(color: Color(0xFF475569)),
+            ),
+          ),
+        const SizedBox(height: 16),
         _buildOrderHistoryList(),
       ],
     );
@@ -744,7 +840,13 @@ class _DriverScreenState extends State<DriverScreen> {
           return const Center(child: CircularProgressIndicator());
         }
         final docs = snapshot.data!.docs;
-        if (docs.isEmpty) {
+        final filteredDocs = docs.where((doc) {
+          final data = doc.data() as Map<String, dynamic>;
+          final serviceType = data['serviceType']?.toString();
+          return _supportsService(serviceType);
+        }).toList();
+
+        if (filteredDocs.isEmpty) {
           return Container(
             padding: const EdgeInsets.all(32),
             alignment: Alignment.center,
@@ -754,7 +856,7 @@ class _DriverScreenState extends State<DriverScreen> {
                     color: Colors.grey[600], size: 48),
                 const SizedBox(height: 12),
                 Text(
-                  'Waiting for orders...',
+                  'Waiting for pending orders for your services...',
                   style:
                       TextStyle(color: Colors.grey[500], fontSize: 15),
                 ),
@@ -763,7 +865,7 @@ class _DriverScreenState extends State<DriverScreen> {
           );
         }
         return Column(
-          children: docs.map((doc) {
+          children: filteredDocs.map((doc) {
             final data = doc.data() as Map<String, dynamic>;
             final serviceType = data['serviceType']?.toString() ?? 'boost';
             final address = data['pickupAddress'] ?? 'Unknown location';
