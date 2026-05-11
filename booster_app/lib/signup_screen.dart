@@ -4,6 +4,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'booster_logo.dart';
 import 'auth_routing.dart';
 import 'home_screen.dart';
+import 'terms_policy_screen.dart';
 
 class SignupScreen extends StatefulWidget {
   const SignupScreen({super.key});
@@ -21,12 +22,26 @@ class _SignupScreenState extends State<SignupScreen> {
   bool _isLoading = false;
   bool _obscurePassword = true;
   bool _obscureConfirmPassword = true;
+  bool _agreedToTerms = false;
 
   Future<void> _signup() async {
+    if (!_formKey.currentState!.validate()) {
+      return;
+    }
+
     if (_passwordController.text != _confirmPasswordController.text) {
       _showErrorSnackBar('Passwords do not match', Icons.lock_outline);
       return;
     }
+
+    if (!_agreedToTerms) {
+      _showErrorSnackBar(
+        'Please read and agree to the User Agreement & Privacy Policy to continue.',
+        Icons.gavel,
+      );
+      return;
+    }
+
     setState(() => _isLoading = true);
     try {
       final credential = await FirebaseAuth.instance.createUserWithEmailAndPassword(
@@ -103,6 +118,10 @@ class _SignupScreenState extends State<SignupScreen> {
         'latitude': 0.0,
         'longitude': 0.0,
         'isSubscribed': false,
+        'agreementAccepted': true,
+        'privacyPolicyAccepted': true,
+        'agreementVersion': kBoosterAgreementVersion,
+        'agreementAcceptedAt': FieldValue.serverTimestamp(),
         'createdAt': FieldValue.serverTimestamp(),
       });
       return true;
@@ -258,11 +277,54 @@ class _SignupScreenState extends State<SignupScreen> {
                               setState(() => _selectedRole = value);
                             },
                     ),
+                    const SizedBox(height: 16),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF8FAFC),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: const Color(0xFFE2E8F0)),
+                      ),
+                      child: Column(
+                        children: [
+                          CheckboxListTile(
+                            value: _agreedToTerms,
+                            onChanged: _isLoading
+                                ? null
+                                : (value) {
+                                    setState(() => _agreedToTerms = value ?? false);
+                                  },
+                            contentPadding: EdgeInsets.zero,
+                            controlAffinity: ListTileControlAffinity.leading,
+                            title: const Text(
+                              'I have read and agree to the User Agreement & Privacy Policy.',
+                              style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600),
+                            ),
+                          ),
+                          Align(
+                            alignment: Alignment.centerLeft,
+                            child: TextButton.icon(
+                              onPressed: _isLoading
+                                  ? null
+                                  : () {
+                                      Navigator.of(context).push(
+                                        MaterialPageRoute(
+                                          builder: (_) => const TermsPolicyScreen(),
+                                        ),
+                                      );
+                                    },
+                              icon: const Icon(Icons.description_outlined),
+                              label: const Text('Read full agreement and privacy policy'),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
                     const SizedBox(height: 32),
                     _isLoading
                         ? const SizedBox(height: 50, child: Center(child: CircularProgressIndicator()))
                         : ElevatedButton(
-                            onPressed: _signup,
+                            onPressed: _agreedToTerms ? _signup : null,
                             style: ElevatedButton.styleFrom(minimumSize: const Size(double.infinity, 50), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
                             child: const Text('Sign Up'),
                           ),
