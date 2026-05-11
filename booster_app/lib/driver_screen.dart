@@ -413,6 +413,8 @@ class _DriverScreenState extends State<DriverScreen> {
             ),
           ),
         ],
+        const SizedBox(height: 16),
+        _buildOrderHistoryList(),
       ],
     );
   }
@@ -424,7 +426,7 @@ class _DriverScreenState extends State<DriverScreen> {
         _buildAvailabilityCard(),
         const SizedBox(height: 20),
         Text(
-          _isAvailable ? 'Incoming Requests' : 'Go Available to See Requests',
+          _isAvailable ? 'Incoming Orders' : 'Go Available to See Orders',
           style: const TextStyle(
             color: Colors.white,
             fontSize: 18,
@@ -523,17 +525,6 @@ class _DriverScreenState extends State<DriverScreen> {
                 : 'Paid Boost Request';
         actionLabel = 'Accept Request';
         nextStatus = 'accepted';
-        break;
-      case 'paid':
-        statusColor = const Color(0xFF22C55E);
-        statusIcon = Icons.check_circle;
-        statusLabel = isTowOrder
-            ? 'Payment Received — Dispatch Tow Truck'
-          : isMechanicOrder
-            ? 'Payment Received — Drive to Customer'
-            : 'Payment Received — Head to Customer';
-        actionLabel = "I'm En Route";
-        nextStatus = 'en_route';
         break;
       case 'accepted':
         statusColor = const Color(0xFF6366F1);
@@ -734,7 +725,7 @@ class _DriverScreenState extends State<DriverScreen> {
                     color: Colors.grey[600], size: 48),
                 const SizedBox(height: 12),
                 Text(
-                  'Waiting for boost requests...',
+                  'Waiting for orders...',
                   style:
                       TextStyle(color: Colors.grey[500], fontSize: 15),
                 ),
@@ -917,6 +908,123 @@ class _DriverScreenState extends State<DriverScreen> {
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildOrderHistoryList() {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return const SizedBox.shrink();
+
+    return StreamBuilder<QuerySnapshot>(
+      stream: FirebaseFirestore.instance
+          .collection('requests')
+          .where('driverId', isEqualTo: user.uid)
+          .limit(50)
+          .snapshots(),
+      builder: (context, snapshot) {
+        if (snapshot.hasError) {
+          return const SizedBox.shrink();
+        }
+        if (!snapshot.hasData) {
+          return const SizedBox.shrink();
+        }
+
+        final docs = [...snapshot.data!.docs];
+        docs.sort((a, b) {
+          final aTs = (a.data() as Map<String, dynamic>)['timestamp'] as Timestamp?;
+          final bTs = (b.data() as Map<String, dynamic>)['timestamp'] as Timestamp?;
+          final aMillis = aTs?.millisecondsSinceEpoch ?? 0;
+          final bMillis = bTs?.millisecondsSinceEpoch ?? 0;
+          return bMillis.compareTo(aMillis);
+        });
+
+        final historyDocs = docs.where((doc) {
+          final data = doc.data() as Map<String, dynamic>;
+          final status = (data['status'] ?? '').toString();
+          return status == 'completed' || status == 'cancelled' || status == 'expired';
+        }).take(10).toList();
+
+        if (historyDocs.isEmpty) {
+          return const SizedBox.shrink();
+        }
+
+        return Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: const Color(0xFF111827),
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: Colors.white12),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Order History',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.w800,
+                  fontSize: 15,
+                ),
+              ),
+              const SizedBox(height: 10),
+              ...historyDocs.map((doc) {
+                final data = doc.data() as Map<String, dynamic>;
+                final status = (data['status'] ?? 'unknown').toString();
+                final serviceType = (data['serviceType'] ?? 'boost').toString();
+                final address = (data['pickupAddress'] ?? 'No pickup address').toString();
+                final statusColor = status == 'completed'
+                    ? const Color(0xFF22C55E)
+                    : const Color(0xFFEF4444);
+
+                final serviceLabel = serviceType == 'tow'
+                    ? 'Tow'
+                    : serviceType == 'mobile_mechanic'
+                        ? 'Mechanic'
+                        : 'Boost';
+
+                return Container(
+                  margin: const EdgeInsets.only(bottom: 8),
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF1E293B),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: Colors.white12),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Text(
+                            serviceLabel,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          const Spacer(),
+                          Text(
+                            status,
+                            style: TextStyle(
+                              color: statusColor,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        address,
+                        style: const TextStyle(color: Colors.white70, fontSize: 12),
+                      ),
+                    ],
+                  ),
+                );
+              }),
+            ],
+          ),
+        );
+      },
     );
   }
 

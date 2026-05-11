@@ -5,6 +5,8 @@ import 'package:flutter/material.dart';
 class TransactionTrackingScreen extends StatelessWidget {
   const TransactionTrackingScreen({super.key});
 
+  String _fmtCadCents(int cents) => '\$${(cents / 100).toStringAsFixed(2)}';
+
   Color _statusColor(String status) {
     switch (status) {
       case 'paid':
@@ -110,6 +112,19 @@ class TransactionTrackingScreen extends StatelessWidget {
                     final serviceType = (data['serviceType'] ?? 'boost').toString();
                     final pickupAddress = (data['pickupAddress'] ?? 'No pickup address').toString();
                     final timestamp = data['timestamp'] as Timestamp?;
+                    final paidAt = data['paidAt'] as Timestamp?;
+                    final acceptedAt = data['acceptedAt'] as Timestamp?;
+                    final completedAt = data['completedAt'] as Timestamp?;
+                    final cancelledAt = data['cancelledAt'] as Timestamp?;
+                    final expiredAt = data['expiredAt'] as Timestamp?;
+                    final paymentAmount = (data['paymentAmount'] as num?)?.toInt() ??
+                      (data['totalChargeCents'] as num?)?.toInt() ??
+                      (data['creditedAmountCents'] as num?)?.toInt() ??
+                      0;
+                    final paymentProvider = (data['paymentProvider'] ?? 'in_app').toString();
+                    final creditApplied = data['creditApplied'] == true;
+                    final creditedAmount = (data['creditedAmountCents'] as num?)?.toInt() ?? 0;
+                    final refundRequestStatus = (data['refundRequestStatus'] ?? 'none').toString();
                     final statusColor = _statusColor(status);
 
                     return Container(
@@ -156,6 +171,86 @@ class TransactionTrackingScreen extends StatelessWidget {
                             pickupAddress,
                             style: const TextStyle(color: Color(0xFF4B5563)),
                           ),
+                          const SizedBox(height: 10),
+                          Container(
+                            padding: const EdgeInsets.all(10),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFF8FAFC),
+                              borderRadius: BorderRadius.circular(10),
+                              border: Border.all(color: const Color(0xFFE5E7EB)),
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'Payment: ${paymentAmount > 0 ? _fmtCadCents(paymentAmount) : 'N/A'} • ${paymentProvider.toUpperCase()}',
+                                  style: const TextStyle(
+                                    color: Color(0xFF0F172A),
+                                    fontWeight: FontWeight.w600,
+                                    fontSize: 12,
+                                  ),
+                                ),
+                                if (creditApplied || creditedAmount > 0) ...[
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    'Credit applied: ${_fmtCadCents(creditedAmount)}',
+                                    style: const TextStyle(
+                                      color: Color(0xFF065F46),
+                                      fontWeight: FontWeight.w600,
+                                      fontSize: 12,
+                                    ),
+                                  ),
+                                ],
+                                if (refundRequestStatus != 'none') ...[
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    'Refund request: $refundRequestStatus',
+                                    style: const TextStyle(
+                                      color: Color(0xFF7C3AED),
+                                      fontWeight: FontWeight.w600,
+                                      fontSize: 12,
+                                    ),
+                                  ),
+                                ],
+                              ],
+                            ),
+                          ),
+                          const SizedBox(height: 10),
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 8,
+                            children: [
+                              _ActivityChip(
+                                label: 'Requested ${_formatTime(timestamp)}',
+                                color: const Color(0xFF475569),
+                              ),
+                              if (paidAt != null)
+                                _ActivityChip(
+                                  label: 'Paid ${_formatTime(paidAt)}',
+                                  color: const Color(0xFFCA8A04),
+                                ),
+                              if (acceptedAt != null)
+                                _ActivityChip(
+                                  label: 'Accepted ${_formatTime(acceptedAt)}',
+                                  color: const Color(0xFF0EA5E9),
+                                ),
+                              if (completedAt != null)
+                                _ActivityChip(
+                                  label: 'Completed ${_formatTime(completedAt)}',
+                                  color: const Color(0xFF16A34A),
+                                ),
+                              if (cancelledAt != null)
+                                _ActivityChip(
+                                  label: 'Cancelled ${_formatTime(cancelledAt)}',
+                                  color: const Color(0xFFDC2626),
+                                ),
+                              if (expiredAt != null)
+                                _ActivityChip(
+                                  label: 'Expired ${_formatTime(expiredAt)}',
+                                  color: const Color(0xFFDC2626),
+                                ),
+                            ],
+                          ),
                           const SizedBox(height: 8),
                           Text(
                             'Request ID: ${doc.id}',
@@ -179,6 +274,32 @@ class TransactionTrackingScreen extends StatelessWidget {
                 );
               },
             ),
+    );
+  }
+}
+
+class _ActivityChip extends StatelessWidget {
+  const _ActivityChip({required this.label, required this.color});
+
+  final String label;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+          color: color,
+          fontSize: 11,
+          fontWeight: FontWeight.w700,
+        ),
+      ),
     );
   }
 }

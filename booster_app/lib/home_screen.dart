@@ -9,6 +9,7 @@ import 'explainer_screen.dart';
 import 'project_flow_checkpoint.dart';
 import 'boost_metrics_screen.dart';
 import 'transaction_tracking_screen.dart';
+import 'profile_settings_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -33,9 +34,9 @@ class _HomeScreenState extends State<HomeScreen> {
       activeIcon: Icons.tune,
     ),
     _MainTabVisual(
-      label: 'Orders NEW',
-      icon: Icons.radar_outlined,
-      activeIcon: Icons.radar,
+      label: 'Orders',
+      icon: Icons.receipt_long_outlined,
+      activeIcon: Icons.receipt_long,
     ),
     _MainTabVisual(
       label: 'Profile',
@@ -108,11 +109,19 @@ class _HomeScreenState extends State<HomeScreen> {
     return snapshot.docs.isNotEmpty;
   }
 
-  Future<void> _openRequestsTab() async {
+  Future<void> _openOrdersTab() async {
     await _setRoleForCurrentUser('driver');
     if (!mounted) return;
     Navigator.of(context).push(
       MaterialPageRoute(builder: (_) => const DriverScreen()),
+    );
+  }
+
+  Future<void> _openCustomerRequests() async {
+    await _setRoleForCurrentUser('customer');
+    if (!mounted) return;
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => const CustomerScreen()),
     );
   }
 
@@ -203,9 +212,17 @@ class _HomeScreenState extends State<HomeScreen> {
           },
         );
       case 1:
-        return _RequestsTab(onOpenDriverMode: _openRequestsTab);
+        return _RequestsTab(
+          onOpenCurrentRequest: _openCustomerRequests,
+          onOpenTransactions: () {
+            Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const TransactionTrackingScreen()),
+            );
+          },
+        );
       case 2:
         return _OrdersTab(
+          onOpenOrders: _openOrdersTab,
           onOpenTransactions: () {
             Navigator.of(context).push(
               MaterialPageRoute(builder: (_) => const TransactionTrackingScreen()),
@@ -446,27 +463,37 @@ class _ServiceChoiceCard extends StatelessWidget {
 }
 
 class _RequestsTab extends StatelessWidget {
-  const _RequestsTab({required this.onOpenDriverMode});
+  const _RequestsTab({
+    required this.onOpenCurrentRequest,
+    required this.onOpenTransactions,
+  });
 
-  final VoidCallback onOpenDriverMode;
+  final VoidCallback onOpenCurrentRequest;
+  final VoidCallback onOpenTransactions;
 
   @override
   Widget build(BuildContext context) {
     return _InfoTab(
       title: 'Requests',
       subtitle:
-          'Turn on provider mode to receive nearby jobs. This keeps the legacy tab flow visible while we restore full request queue UI.',
+          'Track all customer-side activity here: request status, payment progress, and transaction history.',
       icon: Icons.tune,
       accent: const Color(0xFFEA3DFF),
-      actionLabel: 'Open Provider Mode',
-      onAction: onOpenDriverMode,
+      actionLabel: 'Open Live Request',
+      onAction: onOpenCurrentRequest,
+      secondaryActionLabel: 'Open Transaction History',
+      onSecondaryAction: onOpenTransactions,
     );
   }
 }
 
 class _OrdersTab extends StatelessWidget {
-  const _OrdersTab({required this.onOpenTransactions});
+  const _OrdersTab({
+    required this.onOpenOrders,
+    required this.onOpenTransactions,
+  });
 
+  final VoidCallback onOpenOrders;
   final VoidCallback onOpenTransactions;
 
   @override
@@ -474,11 +501,13 @@ class _OrdersTab extends StatelessWidget {
     return _InfoTab(
       title: 'Orders',
       subtitle:
-          'Track active, expired, cancelled, and completed customer requests in one place.',
+          'Provider workspace for new and old orders, plus customer-side transaction history.',
       icon: Icons.radar,
       accent: const Color(0xFF00E5FF),
-      actionLabel: 'Open Transaction Tracking',
-      onAction: onOpenTransactions,
+      actionLabel: 'Open Provider Orders',
+      onAction: onOpenOrders,
+      secondaryActionLabel: 'Open Transaction History',
+      onSecondaryAction: onOpenTransactions,
     );
   }
 }
@@ -493,23 +522,29 @@ class _ProfileTab extends StatelessWidget {
     return _InfoTab(
       title: 'Profile',
       subtitle:
-          'Account profile restoration is next. Open live boost metrics, inspect checkpoints, or sign out.',
+          'Manage your account, configure provider services/prices, inspect metrics, and sign out.',
       icon: Icons.person,
       accent: const Color(0xFFFFD60A),
-      actionLabel: 'Open Boost Metrics',
+      actionLabel: 'Service Types & Pricing',
       onAction: () {
+        Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => const ProfileSettingsScreen()),
+        );
+      },
+      secondaryActionLabel: 'Open Boost Metrics',
+      onSecondaryAction: () {
         Navigator.of(context).push(
           MaterialPageRoute(builder: (_) => const BoostMetricsScreen()),
         );
       },
-      secondaryActionLabel: 'Flow Checkpoint',
-      onSecondaryAction: () {
+      tertiaryActionLabel: 'Flow Checkpoint',
+      onTertiaryAction: () {
         Navigator.of(context).push(
           MaterialPageRoute(builder: (_) => const FlowCheckpointScreen()),
         );
       },
-      tertiaryActionLabel: 'Sign out',
-      onTertiaryAction: onLogout,
+      quaternaryActionLabel: 'Sign out',
+      onQuaternaryAction: onLogout,
     );
   }
 }
@@ -526,6 +561,8 @@ class _InfoTab extends StatelessWidget {
     this.onSecondaryAction,
     this.tertiaryActionLabel,
     this.onTertiaryAction,
+    this.quaternaryActionLabel,
+    this.onQuaternaryAction,
   });
 
   final String title;
@@ -538,6 +575,8 @@ class _InfoTab extends StatelessWidget {
   final VoidCallback? onSecondaryAction;
   final String? tertiaryActionLabel;
   final VoidCallback? onTertiaryAction;
+  final String? quaternaryActionLabel;
+  final VoidCallback? onQuaternaryAction;
 
   @override
   Widget build(BuildContext context) {
@@ -596,6 +635,13 @@ class _InfoTab extends StatelessWidget {
                   TextButton(
                     onPressed: onTertiaryAction,
                     child: Text(tertiaryActionLabel!),
+                  ),
+                ],
+                if (quaternaryActionLabel != null && onQuaternaryAction != null) ...[
+                  const SizedBox(height: 6),
+                  TextButton(
+                    onPressed: onQuaternaryAction,
+                    child: Text(quaternaryActionLabel!),
                   ),
                 ],
               ],
