@@ -732,6 +732,51 @@ class _CustomerScreenState extends State<CustomerScreen> {
     );
   }
 
+  Future<void> _changeElectricPlugTypeFromReview() async {
+    if (_selectedBoostVehicleType != _electricVehicleType) {
+      return;
+    }
+
+    final selected = await showModalBottomSheet<String>(
+      context: context,
+      builder: (context) {
+        return SafeArea(
+          child: ListView(
+            shrinkWrap: true,
+            children: [
+              const ListTile(
+                title: Text(
+                  'Select EV Plug Type',
+                  style: TextStyle(fontWeight: FontWeight.w700),
+                ),
+              ),
+              ..._plugTypes.map((plugType) {
+                final isSelected = _selectedBoostPlugType == plugType;
+                return ListTile(
+                  title: Text(plugType),
+                  trailing: isSelected
+                      ? const Icon(Icons.check_circle, color: Color(0xFF22D3EE))
+                      : null,
+                  onTap: () => Navigator.of(context).pop(plugType),
+                );
+              }),
+            ],
+          ),
+        );
+      },
+    );
+
+    if (selected == null || !mounted) {
+      return;
+    }
+
+    setState(() {
+      _selectedBoostPlugType = selected;
+      _plugType = selected;
+    });
+    _showSuccessSnackBar('Plug type updated to $selected');
+  }
+
   String? get _resolvedTowVehicle {
     final manual = _towManualVehicleController.text.trim();
     if (_showTowManualVehicle && manual.isNotEmpty) {
@@ -1938,8 +1983,36 @@ class _CustomerScreenState extends State<CustomerScreen> {
                         const Icon(Icons.directions_car, color: Color(0xFF2BC8E8)),
                         const SizedBox(width: 10),
                         Expanded(
-                          child: Text(vehicleLabel,
-                              style: Theme.of(context).textTheme.bodyLarge),
+                          child: _selectedBoostVehicleType == _electricVehicleType
+                              ? InkWell(
+                                  borderRadius: BorderRadius.circular(10),
+                                  onTap: _changeElectricPlugTypeFromReview,
+                                  child: Padding(
+                                    padding: const EdgeInsets.symmetric(vertical: 2),
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          vehicleLabel,
+                                          style: Theme.of(context).textTheme.bodyLarge,
+                                        ),
+                                        const SizedBox(height: 2),
+                                        const Text(
+                                          'Tap to change plug type',
+                                          style: TextStyle(
+                                            color: Color(0xFF2563EB),
+                                            fontSize: 12,
+                                            fontWeight: FontWeight.w600,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                )
+                              : Text(
+                                  vehicleLabel,
+                                  style: Theme.of(context).textTheme.bodyLarge,
+                                ),
                         ),
                       ],
                     ),
