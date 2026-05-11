@@ -7,6 +7,7 @@ import 'customer_screen.dart';
 import 'driver_screen.dart';
 import 'explainer_screen.dart';
 import 'project_flow_checkpoint.dart';
+import 'boost_metrics_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -99,7 +100,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final snapshot = await FirebaseFirestore.instance
         .collection('requests')
         .where('customerId', isEqualTo: user.uid)
-        .where('status', whereIn: ['pending', 'awaiting_payment', 'paid', 'accepted', 'en_route'])
+      .where('status', whereIn: ['pending', 'awaiting_payment', 'paid', 'expired', 'accepted', 'en_route'])
         .limit(1)
         .get();
 
@@ -471,17 +472,23 @@ class _ProfileTab extends StatelessWidget {
     return _InfoTab(
       title: 'Profile',
       subtitle:
-          'Account profile restoration is next. You can sign out from here while we rebuild the rest of the previous profile surface.',
+          'Account profile restoration is next. Open live boost metrics, inspect checkpoints, or sign out.',
       icon: Icons.person,
       accent: const Color(0xFFFFD60A),
-      actionLabel: 'Sign out',
-      onAction: onLogout,
+      actionLabel: 'Open Boost Metrics',
+      onAction: () {
+        Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => const BoostMetricsScreen()),
+        );
+      },
       secondaryActionLabel: 'Flow Checkpoint',
       onSecondaryAction: () {
         Navigator.of(context).push(
           MaterialPageRoute(builder: (_) => const FlowCheckpointScreen()),
         );
       },
+      tertiaryActionLabel: 'Sign out',
+      onTertiaryAction: onLogout,
     );
   }
 }
@@ -496,6 +503,8 @@ class _InfoTab extends StatelessWidget {
     this.onAction,
     this.secondaryActionLabel,
     this.onSecondaryAction,
+    this.tertiaryActionLabel,
+    this.onTertiaryAction,
   });
 
   final String title;
@@ -506,6 +515,8 @@ class _InfoTab extends StatelessWidget {
   final VoidCallback? onAction;
   final String? secondaryActionLabel;
   final VoidCallback? onSecondaryAction;
+  final String? tertiaryActionLabel;
+  final VoidCallback? onTertiaryAction;
 
   @override
   Widget build(BuildContext context) {
@@ -557,6 +568,13 @@ class _InfoTab extends StatelessWidget {
                   OutlinedButton(
                     onPressed: onSecondaryAction,
                     child: Text(secondaryActionLabel!),
+                  ),
+                ],
+                if (tertiaryActionLabel != null && onTertiaryAction != null) ...[
+                  const SizedBox(height: 10),
+                  TextButton(
+                    onPressed: onTertiaryAction,
+                    child: Text(tertiaryActionLabel!),
                   ),
                 ],
               ],

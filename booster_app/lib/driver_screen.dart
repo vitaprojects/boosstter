@@ -29,6 +29,13 @@ class _DriverScreenState extends State<DriverScreen> {
   String? _activePlugType;
   String? _activeTowReason;
   StreamSubscription<QuerySnapshot>? _activeJobSub;
+  StreamSubscription<QuerySnapshot>? _cancelledJobSub;
+
+  String? _recentCancelledRequestId;
+  String? _recentCancelledBy;
+  DateTime? _recentCancelledAt;
+  String? _recentCancelledServiceType;
+  String? _recentCancelledPickupAddress;
 
   bool get _hasActiveJob =>
       _activeRequestId != null &&
@@ -46,6 +53,7 @@ class _DriverScreenState extends State<DriverScreen> {
   void dispose() {
     _locationTimer?.cancel();
     _activeJobSub?.cancel();
+    _cancelledJobSub?.cancel();
     super.dispose();
   }
 
@@ -67,6 +75,7 @@ class _DriverScreenState extends State<DriverScreen> {
 
     // Re-attach to any in-progress job
     _watchActiveJob();
+    _watchRecentCancellation();
   }
 
   void _watchActiveJob() {
@@ -111,6 +120,44 @@ class _DriverScreenState extends State<DriverScreen> {
             });
           }
         });
+  }
+
+  void _watchRecentCancellation() {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    _cancelledJobSub?.cancel();
+    _cancelledJobSub = FirebaseFirestore.instance
+        .collection('requests')
+        .where('driverId', isEqualTo: user.uid)
+        .where('status', isEqualTo: 'cancelled')
+        .orderBy('cancelledAt', descending: true)
+        .limit(1)
+        .snapshots()
+        .listen((snap) {
+      if (!mounted) return;
+      if (snap.docs.isEmpty) {
+        setState(() {
+          _recentCancelledRequestId = null;
+          _recentCancelledBy = null;
+          _recentCancelledAt = null;
+          _recentCancelledServiceType = null;
+          _recentCancelledPickupAddress = null;
+        });
+        return;
+      }
+
+      final doc = snap.docs.first;
+      final data = doc.data();
+      final cancelledTimestamp = data['cancelledAt'] as Timestamp?;
+      setState(() {
+        _recentCancelledRequestId = doc.id;
+        _recentCancelledBy = data['cancelledBy']?.toString() ?? 'customer';
+        _recentCancelledAt = cancelledTimestamp?.toDate();
+        _recentCancelledServiceType = data['serviceType']?.toString();
+        _recentCancelledPickupAddress = data['pickupAddress']?.toString();
+      });
+    });
   }
 
   void _startLocationUpdates() {
@@ -347,6 +394,10 @@ class _DriverScreenState extends State<DriverScreen> {
         if (_hasActiveJob) ...[
           _buildActiveJobCard(),
         ] else ...[
+          if (_recentCancelledRequestId != null) ...[
+            _buildCancelledRequestCard(),
+            const SizedBox(height: 12),
+          ],
           Container(
             padding: const EdgeInsets.all(20),
             decoration: BoxDecoration(
@@ -806,6 +857,66 @@ class _DriverScreenState extends State<DriverScreen> {
           }).toList(),
         );
       },
+    );
+  }
+
+  Widget _buildCancelledRequestCard() {
+    final serviceLabel = _recentCancelledServiceType == 'tow'
+        ? 'Tow Assistance'
+        : _recentCancelledServiceType == 'mobile_mechanic'
+            ? 'Mobile Mechanic'
+            : 'Battery Boost';
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFF3F1D1D),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFFCA5A5).withValues(alpha: 0.45)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.cancel_outlined, color: Color(0xFFFCA5A5), size: 20),
+              const SizedBox(width: 8),
+              const Expanded(
+                child: Text(
+                  'Recent Cancellation',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w800,
+                    fontSize: 15,
+                  ),
+                ),
+              ),
+              if (_recentCancelledAt != null)
+                Text(
+                  _formatTimeAgo(_recentCancelledAt!),
+                  style: const TextStyle(color: Color(0xFFFECACA), fontSize: 12),
+                ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            '$serviceLabel request was cancelled by ${_recentCancelledBy ?? 'customer'}.',
+            style: const TextStyle(color: Color(0xFFFEE2E2), fontSize: 13),
+          ),
+          if (_recentCancelledPickupAddress != null) ...[
+            const SizedBox(height: 6),
+            Text(
+              _recentCancelledPickupAddress!,
+              style: const TextStyle(color: Colors.white70, fontSize: 13),
+            ),
+          ],
+          const SizedBox(height: 8),
+          Text(
+            'Request ID: ${_recentCancelledRequestId ?? 'unknown'}',
+            style: const TextStyle(color: Color(0xFFFCA5A5), fontSize: 12),
+          ),
+        ],
+      ),
     );
   }
 

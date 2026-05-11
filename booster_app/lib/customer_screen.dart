@@ -46,6 +46,9 @@ class _CustomerScreenState extends State<CustomerScreen> {
   String? _selectedTowReason;
   final TextEditingController _towNotesController = TextEditingController();
   final List<_NearbyBooster> _nearbyBoosters = <_NearbyBooster>[];
+  final List<String> _boostRetryQueue = <String>[];
+  int _boostRetryQueueIndex = 0;
+  bool _searchTimeoutPersistedForCurrentCycle = false;
 
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _requestWatchSub;
   String? _activeRequestId;
@@ -75,6 +78,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
   bool get _isWaitingForBooster {
     return _activeRequestStatus == 'pending' ||
         _activeRequestStatus == 'paid' ||
+      _activeRequestStatus == 'expired' ||
         _activeRequestStatus == 'accepted' ||
         _activeRequestStatus == 'en_route';
   }
@@ -134,14 +138,12 @@ class _CustomerScreenState extends State<CustomerScreen> {
       _searchStartTime = start;
       _searchRemainingSeconds = remaining;
       _searchTimedOut = false;
+      _searchTimeoutPersistedForCurrentCycle = false;
     });
 
     _searchTimeoutTimer = Timer(Duration(seconds: remaining), () {
       if (!mounted) return;
-      setState(() {
-        _searchRemainingSeconds = 0;
-        _searchTimedOut = true;
-      });
+      _handleSearchCycleTimeout();
     });
 
     _searchCountdownTicker = Timer.periodic(const Duration(seconds: 1), (timer) {
@@ -152,10 +154,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
       final updatedRemaining = (30 * 60) - DateTime.now().difference(start).inSeconds;
       if (updatedRemaining <= 0) {
         timer.cancel();
-        setState(() {
-          _searchRemainingSeconds = 0;
-          _searchTimedOut = true;
-        });
+        _handleSearchCycleTimeout();
       } else {
         setState(() {
           _searchRemainingSeconds = updatedRemaining;
@@ -174,7 +173,112 @@ class _CustomerScreenState extends State<CustomerScreen> {
       }
       _searchRemainingSeconds = 30 * 60;
       _searchTimedOut = false;
+      _searchTimeoutPersistedForCurrentCycle = false;
     });
+  }
+
+  void _handleSearchCycleTimeout() {
+    if (!mounted) return;
+    final shouldPersist = !_searchTimeoutPersistedForCurrentCycle;
+    setState(() {
+      _searchRemainingSeconds = 0;
+      _searchTimedOut = true;
+      _searchTimeoutPersistedForCurrentCycle = true;
+    });
+
+    if (shouldPersist) {
+      _persistSearchTimeout();
+      _trackBoostFlowEvent(
+        'search_cycle_timeout',
+        details: <String, dynamic>{
+          'resendAttempts': _resendAttempts,
+          'activeStatus': _activeRequestStatus,
+        },
+      );
+    }
+  }
+
+  Future<void> _persistSearchTimeout() async {
+    final requestId = _activeRequestId;
+    if (requestId == null) {
+      return;
+    }
+    try {
+      await FirebaseFirestore.instance.collection('requests').doc(requestId).update({
+        'status': 'expired',
+        'expiredAt': FieldValue.serverTimestamp(),
+        'searchCycleTimedOutAt': FieldValue.serverTimestamp(),
+        'searchTimeoutCount': FieldValue.increment(1),
+        'lastSearchCycleResult': 'timeout',
+        'resendAttempts': _resendAttempts,
+      });
+    } catch (_) {
+      // Keep UI flow going even if analytics/state persistence fails.
+    }
+  }
+
+  void _rebuildBoostRetryQueue({String? rotateAfterDriverId}) {
+    final ids = _nearbyBoosters.map((b) => b.userId).toList();
+    if (ids.isEmpty) {
+      _boostRetryQueue
+        ..clear();
+      _boostRetryQueueIndex = 0;
+      return;
+    }
+
+    if (rotateAfterDriverId != null) {
+      final currentIndex = ids.indexOf(rotateAfterDriverId);
+      if (currentIndex >= 0) {
+        final rotated = <String>[];
+        for (var i = 1; i <= ids.length; i++) {
+          rotated.add(ids[(currentIndex + i) % ids.length]);
+        }
+        _boostRetryQueue
+          ..clear()
+          ..addAll(rotated);
+        _boostRetryQueueIndex = 0;
+        return;
+      }
+    }
+
+    _boostRetryQueue
+      ..clear()
+      ..addAll(ids);
+    _boostRetryQueueIndex = 0;
+  }
+
+  String? _nextBoostProviderFromQueue() {
+    if (_boostRetryQueue.isEmpty) {
+      return null;
+    }
+    final providerId = _boostRetryQueue[_boostRetryQueueIndex % _boostRetryQueue.length];
+    _boostRetryQueueIndex = (_boostRetryQueueIndex + 1) % _boostRetryQueue.length;
+    return providerId;
+  }
+
+  Future<void> _trackBoostFlowEvent(
+    String eventName, {
+    Map<String, dynamic>? details,
+  }) async {
+    final userId = FirebaseAuth.instance.currentUser?.uid;
+    if (userId == null) {
+      return;
+    }
+    try {
+      await FirebaseFirestore.instance.collection('analytics_events').add({
+        'eventName': eventName,
+        'userId': userId,
+        'requestId': _activeRequestId,
+        'serviceType': _serviceType,
+        'activeStatus': _activeRequestStatus,
+        'resendAttempts': _resendAttempts,
+        'flowStep': _flowStep,
+        'details': details ?? <String, dynamic>{},
+        'createdAt': FieldValue.serverTimestamp(),
+      });
+    } catch (_) {
+      // Ignore analytics write failures.
+    }
   }
 
   Future<void> _loadPreferredServiceType() async {
@@ -528,7 +632,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
     final activeSnapshot = await FirebaseFirestore.instance
         .collection('requests')
         .where('customerId', isEqualTo: customerId)
-        .where('status', whereIn: ['pending', 'awaiting_payment', 'paid', 'accepted', 'en_route'])
+      .where('status', whereIn: ['pending', 'awaiting_payment', 'paid', 'expired', 'accepted', 'en_route'])
         .limit(1)
         .get();
 
@@ -705,17 +809,29 @@ class _CustomerScreenState extends State<CustomerScreen> {
       _flowStep = 4;
       _noProvidersFound = false;
       _shareDialogShownForCurrentTimeout = false;
+      _resendAttempts = 0;
     });
+    _boostRetryQueue
+      ..clear();
+    _boostRetryQueueIndex = 0;
     _startSearchCycleCountdown();
     await _searchNearbyBoosters();
     if (!mounted) return;
 
     if (_nearbyBoosters.isEmpty) {
       setState(() => _noProvidersFound = true);
+      await _trackBoostFlowEvent(
+        'initial_search_no_providers',
+        details: <String, dynamic>{
+          'pickupAddress': _pickupAddress,
+        },
+      );
       return;
     }
 
-    await _requestBoost(_nearbyBoosters.first.userId);
+    _rebuildBoostRetryQueue();
+    final providerId = _nextBoostProviderFromQueue() ?? _nearbyBoosters.first.userId;
+    await _requestBoost(providerId);
   }
 
   Future<void> _requestBoost(String driverId) async {
@@ -770,6 +886,12 @@ class _CustomerScreenState extends State<CustomerScreen> {
         'vehicleType': _vehicleType,
         'towVehicleType': _serviceType == _serviceTypeTow ? _vehicleType : null,
         'plugType': _plugType,
+        'dispatchMode': 'retry_queue',
+        'resendAttempts': _resendAttempts,
+        'searchTimeoutCount': 0,
+        'attemptedDriverIds': FieldValue.arrayUnion([driverId]),
+        'lastDispatchedDriverId': driverId,
+        'lastDispatchedAt': FieldValue.serverTimestamp(),
         'timestamp': FieldValue.serverTimestamp(),
       });
 
@@ -786,12 +908,26 @@ class _CustomerScreenState extends State<CustomerScreen> {
         _showSuccessSnackBar(
           'Payment confirmed. Request sent and waiting for provider acceptance.',
         );
+        await _trackBoostFlowEvent(
+          'boost_request_dispatched',
+          details: <String, dynamic>{
+            'driverId': driverId,
+            'queueSize': _boostRetryQueue.length,
+            'pickupAddress': _pickupAddress,
+          },
+        );
       }
     } catch (e) {
       if (mounted) {
         _showErrorSnackBar(
           'Failed to send request. Please try again',
           Icons.cloud_off,
+        );
+        await _trackBoostFlowEvent(
+          'boost_request_dispatch_failed',
+          details: <String, dynamic>{
+            'driverId': driverId,
+          },
         );
       }
     }
@@ -870,8 +1006,14 @@ class _CustomerScreenState extends State<CustomerScreen> {
           'No available boosters found nearby right now',
           Icons.search_off,
         );
+        await _trackBoostFlowEvent('provider_search_completed', details: <String, dynamic>{
+          'providerCount': 0,
+        });
       } else {
         _showSuccessSnackBar('${boosters.length} boosters found nearby');
+        await _trackBoostFlowEvent('provider_search_completed', details: <String, dynamic>{
+          'providerCount': boosters.length,
+        });
       }
     } catch (_) {
       if (mounted) {
@@ -947,7 +1089,11 @@ class _CustomerScreenState extends State<CustomerScreen> {
         if (_pickupLatLng == null && requestPickupLat != null && requestPickupLng != null) {
           _pickupLatLng = LatLng(requestPickupLat, requestPickupLng);
         }
-        if (newStatus == 'pending' || newStatus == 'paid' || newStatus == 'accepted' || newStatus == 'en_route') {
+        if (newStatus == 'pending' ||
+            newStatus == 'paid' ||
+            newStatus == 'expired' ||
+            newStatus == 'accepted' ||
+            newStatus == 'en_route') {
           _flowStep = 4;
         }
       });
@@ -1053,6 +1199,124 @@ class _CustomerScreenState extends State<CustomerScreen> {
       }
     } finally {
       if (mounted) setState(() => _isCompletingJob = false);
+    }
+  }
+
+  Future<void> _resendActiveBoostRequest() async {
+    final requestId = _activeRequestId;
+    if (requestId == null) {
+      _showErrorSnackBar('No active request to resend.', Icons.info_outline);
+      return;
+    }
+
+    setState(() {
+      _isSearchingBoosters = true;
+      _searchTimedOut = false;
+      _resendAttempts++;
+      _shareDialogShownForCurrentTimeout = false;
+    });
+    _startSearchCycleCountdown();
+
+    await _searchNearbyBoosters();
+    if (!mounted) return;
+
+    if (_nearbyBoosters.isEmpty) {
+      setState(() {
+        _isSearchingBoosters = false;
+      });
+      _showErrorSnackBar('No providers available to resend right now.', Icons.search_off);
+      await _trackBoostFlowEvent('resend_search_no_providers');
+      return;
+    }
+
+    _rebuildBoostRetryQueue(rotateAfterDriverId: _activeDriverId);
+    final targetProviderId = _nextBoostProviderFromQueue();
+    if (targetProviderId == null) {
+      setState(() {
+        _isSearchingBoosters = false;
+      });
+      _showErrorSnackBar('No providers available to resend right now.', Icons.search_off);
+      await _trackBoostFlowEvent('resend_queue_empty');
+      return;
+    }
+
+    try {
+      await FirebaseFirestore.instance.collection('requests').doc(requestId).update({
+        'driverId': targetProviderId,
+        'status': 'paid',
+        'paidAt': FieldValue.serverTimestamp(),
+        'resentAt': FieldValue.serverTimestamp(),
+        'resendAttempts': _resendAttempts,
+        'lastSearchCycleResult': 'resent',
+        'attemptedDriverIds': FieldValue.arrayUnion([targetProviderId]),
+        'lastDispatchedDriverId': targetProviderId,
+        'lastDispatchedAt': FieldValue.serverTimestamp(),
+      });
+
+      if (!mounted) return;
+      setState(() {
+        _activeDriverId = targetProviderId;
+        _activeRequestStatus = 'paid';
+        _isSearchingBoosters = true;
+      });
+      _showSuccessSnackBar('Request resent to a nearby provider.');
+      await _trackBoostFlowEvent(
+        'request_resent',
+        details: <String, dynamic>{
+          'driverId': targetProviderId,
+          'queueSize': _boostRetryQueue.length,
+        },
+      );
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _isSearchingBoosters = false;
+      });
+      _showErrorSnackBar('Could not resend request. Please try again.', Icons.cloud_off);
+      await _trackBoostFlowEvent('request_resend_failed');
+    }
+  }
+
+  Future<void> _cancelActiveBoostRequest() async {
+    final requestId = _activeRequestId;
+
+    _stopSearchCycleCountdown(clearStartTime: true);
+
+    try {
+      if (requestId != null) {
+        await FirebaseFirestore.instance.collection('requests').doc(requestId).update({
+          'status': 'cancelled',
+          'cancelledAt': FieldValue.serverTimestamp(),
+          'cancelledBy': 'customer',
+        });
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _isSearchingBoosters = false;
+        _searchTimedOut = false;
+        _resendAttempts = 0;
+        _shareDialogShownForCurrentTimeout = false;
+        _flowStep = 1;
+        _activeRequestId = null;
+        _activeRequestStatus = null;
+        _activeDriverId = null;
+        _activeServiceType = null;
+        _providerEtaSummary = null;
+        _providerDisplayName = null;
+        _providerDistanceKm = null;
+        _providerEtaMinutes = null;
+        _providerLat = null;
+        _providerLng = null;
+        _boostRetryQueue.clear();
+        _boostRetryQueueIndex = 0;
+      });
+      _showSuccessSnackBar('Request cancelled. You can start a new boost request.');
+      await _trackBoostFlowEvent('request_cancelled_by_customer');
+    } catch (_) {
+      if (!mounted) return;
+      _showErrorSnackBar('Could not cancel request. Please try again.', Icons.cloud_off);
+      await _trackBoostFlowEvent('request_cancel_failed');
     }
   }
 
@@ -1200,6 +1464,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
   Widget build(BuildContext context) {
     final hasActiveOrder = _activeRequestId != null ||
         _activeRequestStatus == 'paid' ||
+      _activeRequestStatus == 'expired' ||
         _activeRequestStatus == 'accepted' ||
         _activeRequestStatus == 'en_route' ||
         _activeRequestStatus == 'completed';
@@ -1244,6 +1509,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
     final hasActiveBoostRequest = _activeRequestId != null ||
         _isWaitingForBooster ||
         _activeRequestStatus == 'paid' ||
+      _activeRequestStatus == 'expired' ||
         _activeRequestStatus == 'accepted' ||
         _activeRequestStatus == 'en_route' ||
         _activeRequestStatus == 'completed';
@@ -1831,8 +2097,10 @@ class _CustomerScreenState extends State<CustomerScreen> {
     final activeService = _activeServiceType ?? _serviceType;
     final isTowOrder = activeService == _serviceTypeTow;
     final isMechanicOrder = activeService == _serviceTypeMechanic;
-    final hasProvider = _activeDriverId != null &&
-        (status == 'accepted' || status == 'en_route' || status == 'paid' || status == 'completed');
+    final hasProviderAccepted = _activeDriverId != null &&
+      (status == 'accepted' || status == 'en_route' || status == 'completed');
+    final isWaitingForAcceptance =
+      status == 'pending' || status == 'paid' || status == 'expired' || _isSearchingBoosters;
     final isCompleted = status == 'completed';
     final showCountdown = (_isSearchWindowStatus || _isSearchingBoosters) && !_searchTimedOut;
 
@@ -1913,7 +2181,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
     }
 
     // ── Searching animation ──────────────────────────────────────────────────
-    if (_isSearchingBoosters && !hasProvider) {
+    if (isWaitingForAcceptance && !hasProviderAccepted) {
             // Second timeout cycle - prompt app sharing after resend cycle also times out.
             if (_searchTimedOut && _resendAttempts >= 1 && !_shareDialogShownForCurrentTimeout) {
               WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -2009,15 +2277,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
                               icon: const Icon(Icons.refresh),
                               label: const Text('Resend Request',
                                   style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
-                              onPressed: () {
-                                setState(() {
-                                  _isSearchingBoosters = true;
-                                  _searchTimedOut = false;
-                                  _resendAttempts++;
-                                  _shareDialogShownForCurrentTimeout = false;
-                                });
-                                _startSearchCycleCountdown();
-                              },
+                              onPressed: _resendActiveBoostRequest,
                               style: ElevatedButton.styleFrom(
                                 backgroundColor: const Color(0xFF5500FF),
                                 foregroundColor: Colors.white,
@@ -2030,16 +2290,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
                           SizedBox(
                             width: double.infinity,
                             child: OutlinedButton(
-                              onPressed: () {
-                                setState(() {
-                                  _isSearchingBoosters = false;
-                                  _searchTimedOut = false;
-                                  _resendAttempts = 0;
-                                  _shareDialogShownForCurrentTimeout = false;
-                                  _flowStep = 1;
-                                });
-                                _stopSearchCycleCountdown(clearStartTime: true);
-                              },
+                              onPressed: _cancelActiveBoostRequest,
                               style: OutlinedButton.styleFrom(
                                 padding: const EdgeInsets.symmetric(vertical: 16),
                                 side: const BorderSide(color: Color(0xFFCCCCCC)),
@@ -2454,6 +2705,8 @@ class _CustomerScreenState extends State<CustomerScreen> {
         return 'Payment Required';
       case 'paid':
         return 'Payment Received – Waiting for Provider Acceptance';
+      case 'expired':
+        return 'Request Expired – Resend or Cancel';
       case 'accepted':
         return isTow
             ? 'Tow Operator Accepted – On the Way'
