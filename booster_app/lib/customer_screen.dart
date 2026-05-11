@@ -853,14 +853,40 @@ class _CustomerScreenState extends State<CustomerScreen> {
   }
 
   Future<bool> _hasConcurrentActiveRequest(String customerId) async {
-    final activeSnapshot = await FirebaseFirestore.instance
-        .collection('requests')
-        .where('customerId', isEqualTo: customerId)
-      .where('status', whereIn: ['pending', 'awaiting_payment', 'paid', 'accepted', 'en_route'])
-        .limit(1)
-        .get();
+    QuerySnapshot<Map<String, dynamic>> activeSnapshot;
+
+    try {
+      activeSnapshot = await FirebaseFirestore.instance
+          .collection('requests')
+          .where('customerId', isEqualTo: customerId)
+          .where('status', whereIn: ['pending', 'awaiting_payment', 'paid', 'accepted', 'en_route'])
+          .limit(5)
+          .get(const GetOptions(source: Source.server));
+    } catch (_) {
+      activeSnapshot = await FirebaseFirestore.instance
+          .collection('requests')
+          .where('customerId', isEqualTo: customerId)
+          .where('status', whereIn: ['pending', 'awaiting_payment', 'paid', 'accepted', 'en_route'])
+          .limit(5)
+          .get();
+    }
 
     if (activeSnapshot.docs.isEmpty) {
+      return false;
+    }
+
+    final activeDocs = activeSnapshot.docs.where((doc) {
+      final data = doc.data();
+      final status = (data['status'] ?? '').toString();
+      // Safety guard: ignore terminal statuses even if query/cache lag briefly returns them.
+      return status == 'pending' ||
+          status == 'awaiting_payment' ||
+          status == 'paid' ||
+          status == 'accepted' ||
+          status == 'en_route';
+    }).toList();
+
+    if (activeDocs.isEmpty) {
       return false;
     }
 
@@ -868,7 +894,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
       return true;
     }
 
-    final activeData = activeSnapshot.docs.first.data();
+    final activeData = activeDocs.first.data();
     final activeServiceType = activeData['serviceType']?.toString() ?? _serviceTypeBoost;
     final activeLabel = _serviceLabel(activeServiceType);
     _showErrorSnackBar(
@@ -876,6 +902,46 @@ class _CustomerScreenState extends State<CustomerScreen> {
       Icons.block,
     );
     return true;
+  }
+
+  Future<void> _cancelOtherActiveRequestsForCustomer({
+    required String customerId,
+    String? excludeRequestId,
+  }) async {
+    try {
+      final snapshot = await FirebaseFirestore.instance
+          .collection('requests')
+          .where('customerId', isEqualTo: customerId)
+          .where('status', whereIn: ['pending', 'awaiting_payment', 'paid', 'accepted', 'en_route'])
+          .limit(20)
+          .get(const GetOptions(source: Source.server));
+
+      if (snapshot.docs.isEmpty) {
+        return;
+      }
+
+      final batch = FirebaseFirestore.instance.batch();
+      var updates = 0;
+
+      for (final doc in snapshot.docs) {
+        if (excludeRequestId != null && doc.id == excludeRequestId) {
+          continue;
+        }
+        updates += 1;
+        batch.update(doc.reference, {
+          'status': 'cancelled',
+          'cancelledAt': FieldValue.serverTimestamp(),
+          'cancelledBy': 'customer',
+          'cancelReason': 'customer_started_new_request',
+        });
+      }
+
+      if (updates > 0) {
+        await batch.commit();
+      }
+    } catch (_) {
+      // Ignore background cleanup failures.
+    }
   }
 
   Future<void> _confirmTowPaymentAndPlaceRequest() async {
@@ -1510,6 +1576,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
   }
 
   Future<void> _cancelActiveBoostRequest() async {
+    final user = FirebaseAuth.instance.currentUser;
     final requestId = _activeRequestId;
 
     _stopSearchCycleCountdown(clearStartTime: true);
@@ -1522,6 +1589,14 @@ class _CustomerScreenState extends State<CustomerScreen> {
           'cancelledAt': FieldValue.serverTimestamp(),
           'cancelledBy': 'customer',
         });
+
+        if (user != null) {
+          await _cancelOtherActiveRequestsForCustomer(
+            customerId: user.uid,
+            excludeRequestId: requestId,
+          );
+        }
+
         await _applyCreditForRequestIfNeeded(
           requestId: requestId,
           terminalStatus: 'cancelled',
