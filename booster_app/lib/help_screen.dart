@@ -182,8 +182,7 @@ class _HelpScreenState extends State<HelpScreen> {
               stream: FirebaseFirestore.instance
                   .collection('help_requests')
                   .where('userId', isEqualTo: userId)
-                  .orderBy('createdAt', descending: true)
-                  .limit(30)
+                  .limit(100)
                   .snapshots(),
               builder: (context, snapshot) {
                 if (snapshot.connectionState == ConnectionState.waiting) {
@@ -197,13 +196,21 @@ class _HelpScreenState extends State<HelpScreen> {
                   return Text('Could not load help requests: ${snapshot.error}');
                 }
 
-                final docs = snapshot.data?.docs ?? <QueryDocumentSnapshot<Map<String, dynamic>>>[];
-                if (docs.isEmpty) {
+                final docs = snapshot.data?.docs.toList() ??
+                    <QueryDocumentSnapshot<Map<String, dynamic>>>[];
+                docs.sort((a, b) {
+                  final aTs = (a.data()['createdAt'] as Timestamp?)?.millisecondsSinceEpoch ?? 0;
+                  final bTs = (b.data()['createdAt'] as Timestamp?)?.millisecondsSinceEpoch ?? 0;
+                  return bTs.compareTo(aTs);
+                });
+                final topDocs = docs.take(30).toList();
+
+                if (topDocs.isEmpty) {
                   return const Text('No help requests yet.');
                 }
 
                 return Column(
-                  children: docs.map((doc) {
+                  children: topDocs.map((doc) {
                     final data = doc.data();
                     final status = (data['status'] ?? 'open').toString();
                     final adminReply = (data['adminReply'] ?? '').toString();
