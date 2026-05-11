@@ -78,8 +78,7 @@ class TransactionTrackingScreen extends StatelessWidget {
               stream: FirebaseFirestore.instance
                   .collection('requests')
                   .where('customerId', isEqualTo: userId)
-                  .orderBy('timestamp', descending: true)
-                  .limit(30)
+                .limit(100)
                   .snapshots(),
               builder: (context, snapshot) {
                 if (snapshot.connectionState == ConnectionState.waiting) {
@@ -95,8 +94,14 @@ class TransactionTrackingScreen extends StatelessWidget {
                   );
                 }
 
-                final docs = snapshot.data?.docs ?? <QueryDocumentSnapshot<Map<String, dynamic>>>[];
-                if (docs.isEmpty) {
+                final docs = snapshot.data?.docs.toList() ?? <QueryDocumentSnapshot<Map<String, dynamic>>>[];
+                docs.sort((a, b) {
+                  final aTs = (a.data()['timestamp'] as Timestamp?)?.millisecondsSinceEpoch ?? 0;
+                  final bTs = (b.data()['timestamp'] as Timestamp?)?.millisecondsSinceEpoch ?? 0;
+                  return bTs.compareTo(aTs);
+                });
+                final topDocs = docs.take(30).toList();
+                if (topDocs.isEmpty) {
                   return const Center(
                     child: Text('No transactions yet'),
                   );
@@ -104,9 +109,9 @@ class TransactionTrackingScreen extends StatelessWidget {
 
                 return ListView.builder(
                   padding: const EdgeInsets.all(14),
-                  itemCount: docs.length,
+                  itemCount: topDocs.length,
                   itemBuilder: (context, index) {
-                    final doc = docs[index];
+                    final doc = topDocs[index];
                     final data = doc.data();
                     final status = (data['status'] ?? 'pending').toString();
                     final serviceType = (data['serviceType'] ?? 'boost').toString();
