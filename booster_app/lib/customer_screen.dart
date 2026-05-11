@@ -57,6 +57,9 @@ class _CustomerScreenState extends State<CustomerScreen> {
   String? _activeDriverId;
   String? _activeServiceType;
   String? _providerEtaSummary;
+  int _appCreditCadCents = 0;
+  int _activeCreditedAmountCents = 0;
+  String _activeRefundRequestStatus = 'none';
 
   // Step 4 tracking
   String? _providerDisplayName;
@@ -92,6 +95,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
   @override
   void initState() {
     super.initState();
+    _loadUserCredit();
     _loadPreferredServiceType();
     _getCurrentLocation();
     _watchLatestRequest();
@@ -257,6 +261,10 @@ class _CustomerScreenState extends State<CustomerScreen> {
         'lastSearchCycleResult': 'timeout',
         'resendAttempts': _resendAttempts,
       });
+      await _applyCreditForRequestIfNeeded(
+        requestId: requestId,
+        terminalStatus: 'expired',
+      );
     } catch (_) {
       // Keep UI flow going even if analytics/state persistence fails.
     }
@@ -323,6 +331,177 @@ class _CustomerScreenState extends State<CustomerScreen> {
       });
     } catch (_) {
       // Ignore analytics write failures.
+    }
+  }
+
+  Future<void> _loadUserCredit() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      return;
+    }
+
+    try {
+      final userDoc = await FirebaseFirestore.instance.collection('users').doc(user.uid).get();
+      final cents = (userDoc.data()?['appCreditCadCents'] as num?)?.toInt() ?? 0;
+      if (!mounted) return;
+      setState(() {
+        _appCreditCadCents = cents;
+      });
+    } catch (_) {
+      // Keep flow working if credit cannot be loaded.
+    }
+  }
+
+  int _extractPaidAmountCents(Map<String, dynamic> requestData) {
+    final paymentAmount = (requestData['paymentAmount'] as num?)?.toInt() ?? 0;
+    if (paymentAmount > 0) {
+      return paymentAmount;
+    }
+    final totalCharge = (requestData['totalChargeCents'] as num?)?.toInt() ?? 0;
+    if (totalCharge > 0) {
+      return totalCharge;
+    }
+    final serviceCharge = (requestData['serviceChargeCents'] as num?)?.toInt() ?? 0;
+    final tax = (requestData['taxCents'] as num?)?.toInt() ?? 0;
+    final subscription = (requestData['subscriptionChargeCents'] as num?)?.toInt() ?? 0;
+    final composite = serviceCharge + tax + subscription;
+    return composite > 0 ? composite : 0;
+  }
+
+  String _fmtCadCents(int cents) => '\$${(cents / 100).toStringAsFixed(2)}';
+
+  Future<void> _applyCreditForRequestIfNeeded({
+    required String requestId,
+    required String terminalStatus,
+  }) async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      return;
+    }
+
+    final firestore = FirebaseFirestore.instance;
+    final requestRef = firestore.collection('requests').doc(requestId);
+    final userRef = firestore.collection('users').doc(user.uid);
+
+    int creditedAmount = 0;
+
+    try {
+      await firestore.runTransaction((tx) async {
+        final requestSnap = await tx.get(requestRef);
+        if (!requestSnap.exists) {
+          return;
+        }
+
+        final data = requestSnap.data() ?? <String, dynamic>{};
+        final status = (data['status'] ?? '').toString();
+        if (status != terminalStatus) {
+          return;
+        }
+
+        if (data['creditApplied'] == true) {
+          return;
+        }
+
+        final amountCents = _extractPaidAmountCents(data);
+        if (amountCents <= 0) {
+          return;
+        }
+
+        creditedAmount = amountCents;
+
+        tx.set(userRef, {
+          'appCreditCadCents': FieldValue.increment(amountCents),
+          'updatedAt': FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true));
+
+        tx.update(requestRef, {
+          'creditApplied': true,
+          'creditedAmountCents': amountCents,
+          'creditAppliedAt': FieldValue.serverTimestamp(),
+          'creditSource': 'auto_$terminalStatus',
+          'refundEligible': true,
+          'refundRequestStatus': data['refundRequestStatus'] ?? 'none',
+        });
+      });
+
+      if (creditedAmount > 0) {
+        await _loadUserCredit();
+        if (!mounted) return;
+        _showSuccessSnackBar('In-app credit applied: ${_fmtCadCents(creditedAmount)}');
+      }
+    } catch (_) {
+      // Ignore credit failures so status transitions still work.
+    }
+  }
+
+  Future<void> _requestRefundForActiveRequest() async {
+    final user = FirebaseAuth.instance.currentUser;
+    final requestId = _activeRequestId;
+    if (user == null || requestId == null) {
+      return;
+    }
+
+    if (!(_activeRequestStatus == 'expired' || _activeRequestStatus == 'cancelled')) {
+      _showErrorSnackBar('Refund requests are available only for expired/cancelled requests.', Icons.info_outline);
+      return;
+    }
+
+    if (_activeRefundRequestStatus == 'pending') {
+      _showSuccessSnackBar('Refund request is already pending.');
+      return;
+    }
+
+    final firestore = FirebaseFirestore.instance;
+    final requestRef = firestore.collection('requests').doc(requestId);
+    final refundRef = firestore.collection('refund_requests').doc();
+
+    try {
+      await firestore.runTransaction((tx) async {
+        final requestSnap = await tx.get(requestRef);
+        if (!requestSnap.exists) {
+          throw StateError('Request not found');
+        }
+        final data = requestSnap.data() ?? <String, dynamic>{};
+        final status = (data['status'] ?? '').toString();
+        if (!(status == 'expired' || status == 'cancelled')) {
+          throw StateError('Request is not refund-eligible');
+        }
+
+        final existingRefundStatus = (data['refundRequestStatus'] ?? 'none').toString();
+        if (existingRefundStatus == 'pending') {
+          return;
+        }
+
+        final amountCents = _extractPaidAmountCents(data);
+
+        tx.set(refundRef, {
+          'requestId': requestId,
+          'userId': user.uid,
+          'status': 'pending',
+          'requestedAt': FieldValue.serverTimestamp(),
+          'terminalStatus': status,
+          'paymentProvider': data['paymentProvider'] ?? 'in_app',
+          'paymentAmountCents': amountCents,
+          'currency': (data['paymentCurrency'] ?? data['currency'] ?? 'cad').toString().toLowerCase(),
+          'serviceType': data['serviceType'] ?? _serviceType,
+          'resolution': 'refund_requested_after_credit',
+        });
+
+        tx.update(requestRef, {
+          'refundRequestStatus': 'pending',
+          'refundRequestedAt': FieldValue.serverTimestamp(),
+          'refundRequestId': refundRef.id,
+        });
+      });
+
+      if (!mounted) return;
+      setState(() {
+        _activeRefundRequestStatus = 'pending';
+      });
+      _showSuccessSnackBar('Refund request submitted. Our team will review it.');
+    } catch (_) {
+      if (!mounted) return;
+      _showErrorSnackBar('Could not submit refund request. Please try again.', Icons.cloud_off);
     }
   }
 
@@ -1124,6 +1303,8 @@ class _CustomerScreenState extends State<CustomerScreen> {
         _activeRequestStatus = newStatus;
         _activeDriverId = data['driverId']?.toString();
         _activeServiceType = data['serviceType']?.toString();
+        _activeCreditedAmountCents = (data['creditedAmountCents'] as num?)?.toInt() ?? 0;
+        _activeRefundRequestStatus = (data['refundRequestStatus'] ?? 'none').toString();
         // Keep the screen service context aligned with the active request.
         if (_activeServiceType == _serviceTypeBoost ||
             _activeServiceType == _serviceTypeTow ||
@@ -1341,6 +1522,10 @@ class _CustomerScreenState extends State<CustomerScreen> {
           'cancelledAt': FieldValue.serverTimestamp(),
           'cancelledBy': 'customer',
         });
+        await _applyCreditForRequestIfNeeded(
+          requestId: requestId,
+          terminalStatus: 'cancelled',
+        );
       }
 
       if (!mounted) return;
@@ -2196,6 +2381,17 @@ class _CustomerScreenState extends State<CustomerScreen> {
                         ?.copyWith(color: const Color(0xFF666A7A)),
                     textAlign: TextAlign.center,
                   ),
+                  if (_activeCreditedAmountCents > 0) ...[
+                    const SizedBox(height: 10),
+                    Text(
+                      'In-app credit added: ${_fmtCadCents(_activeCreditedAmountCents)} (Balance: ${_fmtCadCents(_appCreditCadCents)})',
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w700,
+                        color: Color(0xFF065F46),
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                  ],
                   const SizedBox(height: 30),
                   SizedBox(
                     width: double.infinity,
@@ -2238,6 +2434,22 @@ class _CustomerScreenState extends State<CustomerScreen> {
                         shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(18),
                         ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  SizedBox(
+                    width: double.infinity,
+                    child: TextButton.icon(
+                      onPressed: _activeRefundRequestStatus == 'pending'
+                          ? null
+                          : _requestRefundForActiveRequest,
+                      icon: const Icon(Icons.replay_circle_filled_outlined),
+                      label: Text(
+                        _activeRefundRequestStatus == 'pending'
+                            ? 'Refund Request Pending'
+                            : 'Request Refund (Optional)',
+                        style: const TextStyle(fontWeight: FontWeight.w700),
                       ),
                     ),
                   ),
@@ -2409,6 +2621,17 @@ class _CustomerScreenState extends State<CustomerScreen> {
                                 ?.copyWith(color: const Color(0xFF666A7A)),
                             textAlign: TextAlign.center,
                           ),
+                          if (status == 'expired' && _activeCreditedAmountCents > 0) ...[
+                            const SizedBox(height: 10),
+                            Text(
+                              'In-app credit added: ${_fmtCadCents(_activeCreditedAmountCents)} (Balance: ${_fmtCadCents(_appCreditCadCents)})',
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w700,
+                                color: Color(0xFF065F46),
+                              ),
+                              textAlign: TextAlign.center,
+                            ),
+                          ],
                           if (status == 'expired' && _expiredAutoReturnSeconds > 0) ...[
                             const SizedBox(height: 10),
                             Text(
@@ -2468,6 +2691,17 @@ class _CustomerScreenState extends State<CustomerScreen> {
                               );
                             },
                             child: const Text('View Transactions'),
+                          ),
+                          TextButton.icon(
+                            onPressed: _activeRefundRequestStatus == 'pending'
+                                ? null
+                                : _requestRefundForActiveRequest,
+                            icon: const Icon(Icons.replay_circle_filled_outlined),
+                            label: Text(
+                              _activeRefundRequestStatus == 'pending'
+                                  ? 'Refund Request Pending'
+                                  : 'Request Refund (Optional)',
+                            ),
                           ),
                         ],
                       ),
