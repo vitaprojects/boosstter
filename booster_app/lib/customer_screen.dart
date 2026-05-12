@@ -808,6 +808,25 @@ class _CustomerScreenState extends State<CustomerScreen> {
   }
 
   Future<void> _saveTowCurrentLocation() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user != null && await _hasConcurrentActiveRequest(user.uid)) {
+      await showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Ongoing Request'),
+          content: Text(
+            'You already have an ongoing request. Please complete or cancel your current request before starting a new one.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('OK'),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
     if (_towDetectedLocationLatLng == null || _towDetectedLocationAddress == null) {
       _showErrorSnackBar('Current location is not ready yet. Try again in a moment.', Icons.my_location);
       return;
@@ -827,6 +846,25 @@ class _CustomerScreenState extends State<CustomerScreen> {
   }
 
   Future<void> _saveTowManualAddress() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user != null && await _hasConcurrentActiveRequest(user.uid)) {
+      await showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Ongoing Request'),
+          content: Text(
+            'You already have an ongoing request. Please complete or cancel your current request before starting a new one.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('OK'),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
     final input = _towManualAddressController.text.trim();
     if (input.isEmpty) {
       _showErrorSnackBar('Enter an address to continue', Icons.search);
