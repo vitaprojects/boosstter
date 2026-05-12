@@ -72,14 +72,14 @@ class _CustomerScreenState extends State<CustomerScreen> {
   bool _isCompletingJob = false;
   bool _noProvidersFound = false;
 
-  // Search timeout tracking (30 minutes = 1800 seconds)
+  // Search timeout tracking (10 minutes = 600 seconds)
   DateTime? _searchStartTime;
   Timer? _searchTimeoutTimer;
   Timer? _searchCountdownTicker;
   Timer? _expiredAutoReturnTimer;
   bool _searchTimedOut = false;
   int _resendAttempts = 0;
-  int _searchRemainingSeconds = 30 * 60;
+  int _searchRemainingSeconds = 10 * 60;
   int _expiredAutoReturnSeconds = 0;
   bool _shareDialogShownForCurrentTimeout = false;
   bool get _isWaitingForBooster {
@@ -126,7 +126,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
   void _startSearchCycleCountdown({DateTime? startedAt}) {
     final start = startedAt ?? DateTime.now();
     final elapsed = DateTime.now().difference(start).inSeconds;
-    final remaining = (30 * 60) - elapsed;
+    final remaining = (10 * 60) - elapsed;
 
     _searchTimeoutTimer?.cancel();
     _searchCountdownTicker?.cancel();
@@ -161,7 +161,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
         timer.cancel();
         return;
       }
-      final updatedRemaining = (30 * 60) - DateTime.now().difference(start).inSeconds;
+      final updatedRemaining = (10 * 60) - DateTime.now().difference(start).inSeconds;
       if (updatedRemaining <= 0) {
         timer.cancel();
         _handleSearchCycleTimeout();
@@ -181,7 +181,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
       if (clearStartTime) {
         _searchStartTime = null;
       }
-      _searchRemainingSeconds = 30 * 60;
+      _searchRemainingSeconds = 10 * 60;
       _searchTimedOut = false;
       _searchTimeoutPersistedForCurrentCycle = false;
     });
@@ -1024,6 +1024,21 @@ class _CustomerScreenState extends State<CustomerScreen> {
     }
 
     if (await _hasConcurrentActiveRequest(user.uid)) {
+      await showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Ongoing Request'),
+          content: Text(
+            'You already have an ongoing request. Please complete or cancel your current request before starting a new one.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('OK'),
+            ),
+          ],
+        ),
+      );
       return;
     }
 
@@ -1046,6 +1061,21 @@ class _CustomerScreenState extends State<CustomerScreen> {
     }
 
     if (await _hasConcurrentActiveRequest(user.uid)) {
+      await showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Ongoing Request'),
+          content: Text(
+            'You already have an ongoing request. Please complete or cancel your current request before starting a new one.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('OK'),
+            ),
+          ],
+        ),
+      );
       return;
     }
 
@@ -1123,6 +1153,21 @@ class _CustomerScreenState extends State<CustomerScreen> {
     if (user == null) return;
 
     if (await _hasConcurrentActiveRequest(user.uid)) {
+      await showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Ongoing Request'),
+          content: Text(
+            'You already have an ongoing request. Please complete or cancel your current request before starting a new one.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('OK'),
+            ),
+          ],
+        ),
+      );
       return;
     }
 
@@ -1177,6 +1222,21 @@ class _CustomerScreenState extends State<CustomerScreen> {
     if (user == null) return;
 
     if (await _hasConcurrentActiveRequest(user.uid)) {
+      await showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Ongoing Request'),
+          content: Text(
+            'You already have an ongoing request. Please complete or cancel your current request before starting a new one.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('OK'),
+            ),
+          ],
+        ),
+      );
       return;
     }
 
@@ -1840,19 +1900,18 @@ class _CustomerScreenState extends State<CustomerScreen> {
         _activeRequestStatus == 'accepted' ||
         _activeRequestStatus == 'en_route' ||
         _activeRequestStatus == 'completed';
-    
-    // Only show tracking screen if active request matches selected service type
-    final showActiveOrderTracking = hasActiveOrder && 
-        (_activeServiceType == _serviceType);
+
+    final isActiveOrderMatchingTab = hasActiveOrder && (_activeServiceType == _serviceType);
+    final isActiveOrderOtherTab = hasActiveOrder && (_activeServiceType != null && _activeServiceType != _serviceType);
 
     return Scaffold(
       appBar: AppBar(
         title: Text(
           _serviceType == _serviceTypeTow
-            ? 'Tow Assistance'
-            : _serviceType == _serviceTypeMechanic
-              ? 'Mobile Mechanic Assistance'
-              : 'Battery Boost Assistance',
+              ? 'Tow Assistance'
+              : _serviceType == _serviceTypeMechanic
+                  ? 'Mobile Mechanic Assistance'
+                  : 'Battery Boost Assistance',
         ),
         actions: [
           IconButton(
@@ -1869,11 +1928,37 @@ class _CustomerScreenState extends State<CustomerScreen> {
           ),
         ],
       ),
-      body: showActiveOrderTracking
+      body: isActiveOrderMatchingTab
           ? _buildBoostStep4(context)
-          : (_serviceType == _serviceTypeTow || _serviceType == _serviceTypeMechanic)
-              ? _buildTowFlow(context)
-              : _buildBoostFlow(context),
+          : isActiveOrderOtherTab
+              ? Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(32.0),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      crossAxisAlignment: CrossAxisAlignment.center,
+                      children: [
+                        Icon(Icons.info_outline, size: 64, color: Colors.deepPurple),
+                        const SizedBox(height: 24),
+                        Text(
+                          'Complete your current request before starting a new one.',
+                          style: Theme.of(context).textTheme.titleLarge,
+                          textAlign: TextAlign.center,
+                        ),
+                        const SizedBox(height: 12),
+                        Text(
+                          'You have an active request for '
+                          '${_serviceLabel(_activeServiceType ?? "")} in progress.',
+                          style: Theme.of(context).textTheme.bodyLarge,
+                          textAlign: TextAlign.center,
+                        ),
+                      ],
+                    ),
+                  ),
+                )
+              : (_serviceType == _serviceTypeTow || _serviceType == _serviceTypeMechanic)
+                  ? _buildTowFlow(context)
+                  : _buildBoostFlow(context),
     );
   }
 
@@ -2793,7 +2878,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
                             status == 'expired'
                                 ? 'This particular transaction has expired. You can resend this request or cancel it.'
                                 : _resendAttempts == 0
-                                    ? 'The 30-minute search cycle ended without a provider response. You can resend or cancel this request.'
+                                    ? 'The 10 minute search cycle ended without a provider response. You can resend or cancel this request.'
                                     : 'The resent cycle ended too. You can resend again or cancel this request.',
                             style: Theme.of(context).textTheme.bodyLarge
                                 ?.copyWith(color: const Color(0xFF666A7A)),
@@ -5018,7 +5103,7 @@ class _PickupSelectorSheetState extends State<_PickupSelectorSheet> {
               ),
             ),
             const SizedBox(height: 12),
-            Text('Set Pickup Location', style: Theme.of(context).textTheme.titleLarge),
+            Text('Where is vehicle Located?', style: Theme.of(context).textTheme.titleLarge),
             const SizedBox(height: 14),
             if (!widget.lockVehicleSelection)
               _VehicleTypeSelector(
@@ -5075,7 +5160,7 @@ class _PickupSelectorSheetState extends State<_PickupSelectorSheet> {
                                 height: 18,
                                 child: CircularProgressIndicator(strokeWidth: 2),
                               )
-                            : const Text('Save Pickup'),
+                            : const Text('Confirm this Location'),
                       ),
                     ],
                   ),
