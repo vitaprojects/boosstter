@@ -21,6 +21,46 @@ class CustomerScreen extends StatefulWidget {
 }
 
 class _CustomerScreenState extends State<CustomerScreen> {
+  // Firestore vehicle types
+  List<String> _vehicleMakes = [];
+  Map<String, List<String>> _vehicleModels = {};
+  String? _selectedVehicleMake;
+  String? _selectedVehicleModel;
+  bool _isLoadingVehicleTypes = false;
+
+  Future<void> _fetchVehicleTypes() async {
+    setState(() { _isLoadingVehicleTypes = true; });
+    final makesSnap = await FirebaseFirestore.instance.collection('vehicle_types').get();
+    final makes = <String>[];
+    final models = <String, List<String>>{};
+    for (final doc in makesSnap.docs) {
+      makes.add(doc.id);
+      final data = doc.data();
+      final modelList = (data['models'] as List?)?.map((e) => e.toString()).toList() ?? [];
+      models[doc.id] = modelList;
+    }
+    setState(() {
+      _vehicleMakes = makes;
+      _vehicleModels = models;
+      _isLoadingVehicleTypes = false;
+    });
+  }
+
+  Future<void> _addManualVehicleType(String make, String model) async {
+    final ref = FirebaseFirestore.instance.collection('vehicle_types').doc(make);
+    final doc = await ref.get();
+    if (doc.exists) {
+      final data = doc.data();
+      final models = (data?['models'] as List?)?.map((e) => e.toString()).toList() ?? [];
+      if (!models.contains(model)) {
+        models.add(model);
+        await ref.update({'models': models});
+      }
+    } else {
+      await ref.set({'models': [model]});
+    }
+    await _fetchVehicleTypes();
+  }
   Position? _currentPosition;
   bool _isLoading = true;
   bool _hasLocationPermission = false;
@@ -101,6 +141,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
     _loadPreferredServiceType();
     _getCurrentLocation();
     _watchLatestRequest();
+    _fetchVehicleTypes();
   }
 
   @override
@@ -1186,7 +1227,6 @@ class _CustomerScreenState extends State<CustomerScreen> {
     }
     if (_isSearchingBoosters) return;
 
-    // Check subscription status and show paywall
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
 
@@ -1209,31 +1249,15 @@ class _CustomerScreenState extends State<CustomerScreen> {
       return;
     }
 
-    final userDoc = await FirebaseFirestore.instance.collection('users').doc(user.uid).get();
-    if (!mounted) return;
-    final data = userDoc.data() ?? <String, dynamic>{};
-    final isFirstTimer = !(data['yearlySubscriptionPaid'] == true);
-
-    final proceed = await Navigator.of(context).push<bool>(
-      MaterialPageRoute(
-        builder: (_) => PaywallScreen(
-          isFirstTimer: isFirstTimer,
-          pickupAddress: _pickupAddress,
-        ),
-      ),
-    );
-    if (proceed != true || !mounted) return;
-
-    // Now search and place request
+    // Search and place request, but do NOT show paywall yet
     setState(() {
       _isSearchingBoosters = true;
-      _flowStep = 4;
+      _flowStep = 3;
       _noProvidersFound = false;
       _shareDialogShownForCurrentTimeout = false;
       _resendAttempts = 0;
     });
-    _boostRetryQueue
-      ..clear();
+    _boostRetryQueue..clear();
     _boostRetryQueueIndex = 0;
     _startSearchCycleCountdown();
     await _searchNearbyBoosters();
@@ -1253,6 +1277,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
     _rebuildBoostRetryQueue();
     final providerId = _nextBoostProviderFromQueue() ?? _nearbyBoosters.first.userId;
     await _requestBoost(providerId);
+    // Now, wait for provider acceptance. Paywall will be shown after acceptance.
   }
 
   Future<void> _requestBoost(String driverId) async {
@@ -1566,8 +1591,45 @@ class _CustomerScreenState extends State<CustomerScreen> {
           _isSearchingBoosters = false;
           _resendAttempts = 0;
         });
+        // Show paywall after provider accepts
+        _showPaywallAfterAcceptance();
         _notifyProviderEta(_activeDriverId!);
       }
+
+  // Show paywall after provider accepts
+  Future<void> _showPaywallAfterAcceptance() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+    final userDoc = await FirebaseFirestore.instance.collection('users').doc(user.uid).get();
+    if (!mounted) return;
+    final data = userDoc.data() ?? <String, dynamic>{};
+    final isFirstTimer = !(data['yearlySubscriptionPaid'] == true);
+
+    final proceed = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => PaywallScreen(
+          isFirstTimer: isFirstTimer,
+          pickupAddress: _pickupAddress,
+        ),
+      ),
+    );
+    if (proceed == true && mounted && _activeRequestId != null) {
+      // Notify provider to proceed (e.g., update status to 'paid')
+      await FirebaseFirestore.instance.collection('requests').doc(_activeRequestId).update({
+        'status': 'paid',
+        'paidAt': FieldValue.serverTimestamp(),
+      });
+      _showSuccessSnackBar('Payment confirmed. Provider is heading to your location.');
+    } else {
+      // Optionally, cancel the request if payment not completed
+      await FirebaseFirestore.instance.collection('requests').doc(_activeRequestId).update({
+        'status': 'cancelled',
+        'cancelledAt': FieldValue.serverTimestamp(),
+        'cancelledBy': 'customer',
+      });
+      _showErrorSnackBar('Payment not completed. Request cancelled.', Icons.payment);
+    }
+  }
 
       // Trigger review prompt when job completes
       if (prevStatus != 'completed' && newStatus == 'completed') {
@@ -2344,41 +2406,82 @@ class _CustomerScreenState extends State<CustomerScreen> {
                           ?.copyWith(fontWeight: FontWeight.w700),
                     ),
                     const SizedBox(height: 12),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: _BoostTypeCard(
-                            title: 'Regular Car Boost',
-                            subtitle: 'Best for standard gas or hybrid vehicles',
-                            icon: Icons.directions_car,
-                            selected: _selectedBoostVehicleType == _regularVehicleType,
-                            selectedColor: const Color(0xFF6366F1),
-                            onTap: () {
-                              setState(() {
-                                _selectedBoostVehicleType = _regularVehicleType;
-                                _selectedBoostPlugType = null;
-                              });
-                            },
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: _BoostTypeCard(
-                            title: 'Electric Car Boost',
-                            subtitle: 'Best for EV roadside battery support',
-                            icon: Icons.ev_station,
-                            selected: _selectedBoostVehicleType == _electricVehicleType,
-                            selectedColor: const Color(0xFF22D3EE),
-                            onTap: () {
-                              setState(() {
-                                _selectedBoostVehicleType = _electricVehicleType;
-                                _selectedBoostPlugType ??= _plugTypes.first;
-                              });
-                            },
-                          ),
-                        ),
-                      ],
+                    _isLoadingVehicleTypes
+                        ? const CircularProgressIndicator()
+                        : Row(children: [
+                            Expanded(
+                              child: DropdownButtonFormField<String>(
+                                value: _selectedVehicleMake,
+                                items: _vehicleMakes
+                                    .map((make) => DropdownMenuItem<String>(value: make, child: Text(make)))
+                                    .toList(),
+                                onChanged: (make) {
+                                  setState(() {
+                                    _selectedVehicleMake = make;
+                                    _selectedVehicleModel = null;
+                                  });
+                                },
+                                decoration: const InputDecoration(hintText: 'Make'),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: DropdownButtonFormField<String>(
+                                value: _selectedVehicleModel,
+                                items: (_selectedVehicleMake != null
+                                        ? _vehicleModels[_selectedVehicleMake] ?? []
+                                        : [])
+                                    .map((model) => DropdownMenuItem<String>(value: model, child: Text(model)))
+                                    .toList(),
+                                onChanged: (model) {
+                                  setState(() {
+                                    _selectedVehicleModel = model;
+                                    _selectedBoostVehicleType = model;
+                                  });
+                                },
+                                decoration: const InputDecoration(hintText: 'Model'),
+                              ),
+                            ),
+                          ]),
+                    TextButton.icon(
+                      onPressed: () {
+                        setState(() {
+                          _showTowManualVehicle = !_showTowManualVehicle;
+                          if (_showTowManualVehicle) {
+                            _selectedBoostVehicleType = null;
+                          }
+                        });
+                      },
+                      icon: const Icon(Icons.edit_note),
+                      label: Text(
+                        _showTowManualVehicle
+                            ? 'Use dropdown instead'
+                            : 'Car not listed? Enter vehicle manually',
+                      ),
                     ),
+                    if (_showTowManualVehicle) ...[
+                      const SizedBox(height: 8),
+                      TextField(
+                        controller: _towManualVehicleController,
+                        decoration: const InputDecoration(
+                          labelText: 'Enter vehicle manually',
+                          hintText: 'Example: 2020 Ford F-150',
+                        ),
+                        onSubmitted: (value) async {
+                          final parts = value.split(' ');
+                          if (parts.length >= 2) {
+                            final make = parts[1];
+                            final model = parts.sublist(2).join(' ');
+                            await _addManualVehicleType(make, model);
+                            setState(() {
+                              _selectedVehicleMake = make;
+                              _selectedVehicleModel = model;
+                              _selectedBoostVehicleType = model;
+                            });
+                          }
+                        },
+                      ),
+                    ],
                     if (_selectedBoostVehicleType == _electricVehicleType) ...[
                       const SizedBox(height: 16),
                       Text(
@@ -3585,22 +3688,43 @@ class _CustomerScreenState extends State<CustomerScreen> {
                     ?.copyWith(fontWeight: FontWeight.w700),
               ),
               const SizedBox(height: 12),
-              DropdownButtonFormField<String>(
-                value: _showTowManualVehicle ? null : _selectedTowVehicle,
-                items: _towVehicleOptions
-                    .map((v) => DropdownMenuItem<String>(value: v, child: Text(v)))
-                    .toList(),
-                onChanged: _showTowManualVehicle
-                    ? null
-                    : (value) {
-                        setState(() {
-                          _selectedTowVehicle = value;
-                        });
-                      },
-                decoration: const InputDecoration(
-                  hintText: 'Choose vehicle',
-                ),
-              ),
+              _isLoadingVehicleTypes
+                  ? const CircularProgressIndicator()
+                  : Row(children: [
+                      Expanded(
+                        child: DropdownButtonFormField<String>(
+                          value: _selectedVehicleMake,
+                          items: _vehicleMakes
+                              .map((make) => DropdownMenuItem<String>(value: make, child: Text(make)))
+                              .toList(),
+                          onChanged: (make) {
+                            setState(() {
+                              _selectedVehicleMake = make;
+                              _selectedVehicleModel = null;
+                            });
+                          },
+                          decoration: const InputDecoration(hintText: 'Make'),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: DropdownButtonFormField<String>(
+                          value: _selectedVehicleModel,
+                          items: (_selectedVehicleMake != null
+                                  ? _vehicleModels[_selectedVehicleMake] ?? []
+                                  : [])
+                              .map((model) => DropdownMenuItem<String>(value: model, child: Text(model)))
+                              .toList(),
+                          onChanged: (model) {
+                            setState(() {
+                              _selectedVehicleModel = model;
+                              _selectedTowVehicle = model;
+                            });
+                          },
+                          decoration: const InputDecoration(hintText: 'Model'),
+                        ),
+                      ),
+                    ]),
               const SizedBox(height: 10),
               TextButton.icon(
                 onPressed: () {
@@ -3626,6 +3750,19 @@ class _CustomerScreenState extends State<CustomerScreen> {
                     labelText: 'Enter vehicle manually',
                     hintText: 'Example: 2020 Ford F-150',
                   ),
+                  onSubmitted: (value) async {
+                    final parts = value.split(' ');
+                    if (parts.length >= 2) {
+                      final make = parts[1];
+                      final model = parts.sublist(2).join(' ');
+                      await _addManualVehicleType(make, model);
+                      setState(() {
+                        _selectedVehicleMake = make;
+                        _selectedVehicleModel = model;
+                        _selectedTowVehicle = model;
+                      });
+                    }
+                  },
                 ),
               ],
               const SizedBox(height: 14),
