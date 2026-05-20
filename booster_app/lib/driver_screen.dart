@@ -6,6 +6,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:flutter/services.dart';
 import 'login_screen.dart';
 import 'customer_screen.dart';
+import 'service_commerce.dart';
 
 class DriverScreen extends StatefulWidget {
   const DriverScreen({super.key});
@@ -327,15 +328,30 @@ class _DriverScreenState extends State<DriverScreen> {
     }
 
     try {
+      final requestRef = FirebaseFirestore.instance.collection('requests').doc(requestId);
+      final requestSnap = await requestRef.get();
+      final data = requestSnap.data() ?? <String, dynamic>{};
+      final customerId = data['customerId']?.toString();
       await FirebaseFirestore.instance
           .collection('requests')
           .doc(requestId)
           .update({
         'status': 'accepted',
+        'stage': 'provider_accepted',
         'driverId': user.uid,
         'driverEmail': user.email ?? '',
         'acceptedAt': FieldValue.serverTimestamp(),
       });
+      if (customerId != null) {
+        await writeStageNotification(
+          requestId: requestId,
+          recipientId: customerId,
+          audience: 'customer',
+          stage: 'provider_accepted',
+          title: 'Provider accepted',
+          body: 'Your provider accepted the order. Please confirm payment to continue.',
+        );
+      }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -348,10 +364,32 @@ class _DriverScreenState extends State<DriverScreen> {
   Future<void> _updateJobStatus(String status) async {
     if (_activeRequestId == null) return;
     try {
+      final requestRef =
+          FirebaseFirestore.instance.collection('requests').doc(_activeRequestId);
+      final requestSnap = await requestRef.get();
+      final data = requestSnap.data() ?? <String, dynamic>{};
+      final customerId = data['customerId']?.toString();
       await FirebaseFirestore.instance
           .collection('requests')
           .doc(_activeRequestId)
-          .update({'status': status});
+          .update({
+        'status': status,
+        'stage': status,
+        if (status == 'en_route') 'enRouteAt': FieldValue.serverTimestamp(),
+        if (status == 'completed') 'completedAt': FieldValue.serverTimestamp(),
+      });
+      if (customerId != null) {
+        await writeStageNotification(
+          requestId: _activeRequestId!,
+          recipientId: customerId,
+          audience: 'customer',
+          stage: status,
+          title: status == 'completed' ? 'Service completed' : 'Provider en route',
+          body: status == 'completed'
+              ? 'Your service has been marked complete.'
+              : 'Your provider is heading to your location.',
+        );
+      }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context)

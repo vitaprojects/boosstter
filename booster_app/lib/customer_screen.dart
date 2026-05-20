@@ -10,6 +10,7 @@ import 'package:flutter/services.dart';
 import 'login_screen.dart';
 import 'paywall_screen.dart';
 import 'review_screen.dart';
+import 'service_commerce.dart';
 import 'stripe_payment_service.dart';
 import 'transaction_tracking_screen.dart';
 
@@ -1034,6 +1035,62 @@ class _CustomerScreenState extends State<CustomerScreen> {
     );
   }
 
+  Future<ServicePricingBreakdown> _pricingForProvider({
+    required String providerId,
+    required String serviceType,
+  }) async {
+    final providerDoc =
+        await FirebaseFirestore.instance.collection('users').doc(providerId).get();
+    final providerData = providerDoc.data();
+    final countryCode = countryCodeFromAddress(_pickupAddress);
+    final rawPaymentProvider =
+        (providerData?['preferredPaymentProvider'] as String?) ?? defaultPaymentProvider;
+    final paymentProvider = supportedPaymentProviders.contains(rawPaymentProvider)
+        ? rawPaymentProvider
+        : defaultPaymentProvider;
+
+    return buildServicePricing(
+      serviceType: serviceType,
+      serviceCents: servicePriceFromProviderData(providerData, serviceType),
+      countryCode: countryCode,
+      currency: providerCurrencyFromData(
+        providerData,
+        fallbackCountryCode: countryCode,
+      ),
+      paymentProvider: paymentProvider,
+    );
+  }
+
+  Future<void> _notifyStage({
+    required String requestId,
+    required String stage,
+    required String customerId,
+    String? providerId,
+    required String customerTitle,
+    required String customerBody,
+    String? providerTitle,
+    String? providerBody,
+  }) async {
+    await writeStageNotification(
+      requestId: requestId,
+      recipientId: customerId,
+      audience: 'customer',
+      stage: stage,
+      title: customerTitle,
+      body: customerBody,
+    );
+    if (providerId != null && providerTitle != null && providerBody != null) {
+      await writeStageNotification(
+        requestId: requestId,
+        recipientId: providerId,
+        audience: 'provider',
+        stage: stage,
+        title: providerTitle,
+        body: providerBody,
+      );
+    }
+  }
+
   String _serviceLabel(String serviceType) {
     switch (serviceType) {
       case _serviceTypeTow:
@@ -1187,7 +1244,19 @@ class _CustomerScreenState extends State<CustomerScreen> {
       return;
     }
 
-    final pricing = await _computeTowPricing();
+    final nearestProvider = _nearbyBoosters.first;
+    final servicePricing = await _pricingForProvider(
+      providerId: nearestProvider.userId,
+      serviceType: _serviceType,
+    );
+    final subscriptionPricing = await _computeTowPricing();
+    final pricing = _TowPricing(
+      serviceCents: servicePricing.serviceCents,
+      taxCents: servicePricing.taxCents,
+      subscriptionCents: subscriptionPricing.subscriptionCents,
+      totalCents: servicePricing.totalCents + subscriptionPricing.subscriptionCents,
+      currency: servicePricing.currency,
+    );
     if (!mounted) return;
 
     final proceed = await Navigator.of(context).push<bool>(
@@ -1224,8 +1293,6 @@ class _CustomerScreenState extends State<CustomerScreen> {
       return;
     }
 
-    final nearestProvider = _nearbyBoosters.first;
-
     try {
       final requestRef = await FirebaseFirestore.instance.collection('requests').add({
         'customerId': user.uid,
@@ -1233,7 +1300,8 @@ class _CustomerScreenState extends State<CustomerScreen> {
         'serviceType': _serviceType,
         'status': 'paid',
         'paidAt': FieldValue.serverTimestamp(),
-        'paymentProvider': 'in_app',
+        'paymentStatus': 'paid',
+        'paymentProvider': servicePricing.paymentProvider,
         'pickupAddress': _pickupAddress,
         'pickupLatitude': _pickupLatLng!.latitude,
         'pickupLongitude': _pickupLatLng!.longitude,
@@ -1247,7 +1315,21 @@ class _CustomerScreenState extends State<CustomerScreen> {
         'subscriptionChargeCents': pricing.subscriptionCents,
         'taxCents': pricing.taxCents,
         'totalChargeCents': pricing.totalCents,
-        'currency': 'cad',
+        'paymentAmount': pricing.totalCents,
+        'adminFeeCents': servicePricing.adminFeeCents,
+        'providerPayoutCents': servicePricing.providerPayoutCents,
+        'taxRate': servicePricing.taxRate,
+        'adminRate': servicePricing.adminRate,
+        'taxCountryCode': servicePricing.countryCode,
+        'currency': servicePricing.currency.toLowerCase(),
+        'paymentCurrency': servicePricing.currency.toLowerCase(),
+        'supportedPaymentProviders': supportedPaymentProviders,
+        'paySplit': <String, dynamic>{
+          'adminPercent': (servicePricing.adminRate * 100).round(),
+          'adminFeeCents': servicePricing.adminFeeCents,
+          'providerPayoutCents': servicePricing.providerPayoutCents,
+        },
+        'stage': 'payment_confirmed',
         'timestamp': FieldValue.serverTimestamp(),
       });
 
@@ -1274,6 +1356,16 @@ class _CustomerScreenState extends State<CustomerScreen> {
         _serviceType == _serviceTypeMechanic
         ? 'Payment confirmed. Mobile mechanic request sent to nearest provider.'
         : 'Payment confirmed. Tow request sent to nearest provider.',
+      );
+      await _notifyStage(
+        requestId: requestRef.id,
+        stage: 'payment_confirmed',
+        customerId: user.uid,
+        providerId: nearestProvider.userId,
+        customerTitle: 'Payment confirmed',
+        customerBody: 'Your ${_serviceLabel(_serviceType)} request was sent to the provider.',
+        providerTitle: 'New paid ${_serviceLabel(_serviceType)} order',
+        providerBody: 'A customer is waiting at $_pickupAddress.',
       );
     } catch (_) {
       if (!mounted) return;
@@ -1410,15 +1502,35 @@ class _CustomerScreenState extends State<CustomerScreen> {
     }
 
     try {
+      final pricing = await _pricingForProvider(
+        providerId: driverId,
+        serviceType: _serviceTypeBoost,
+      );
       final docRef = await FirebaseFirestore.instance.collection('requests').add({
         'customerId': user.uid,
         'driverId': driverId,
         'serviceType': _serviceType,
         'status': 'pending',
-        'paymentAmount': boostPaymentTotalCadCents,
-        'paymentCurrency': 'cad',
-        'paymentProvider': 'in_app_after_acceptance',
+        'stage': 'provider_requested',
+        'paymentAmount': pricing.totalCents,
+        'paymentCurrency': pricing.currency.toLowerCase(),
+        'paymentProvider': pricing.paymentProvider,
         'paymentStatus': 'awaiting_provider_acceptance',
+        'serviceChargeCents': pricing.serviceCents,
+        'taxCents': pricing.taxCents,
+        'totalChargeCents': pricing.totalCents,
+        'adminFeeCents': pricing.adminFeeCents,
+        'providerPayoutCents': pricing.providerPayoutCents,
+        'taxRate': pricing.taxRate,
+        'adminRate': pricing.adminRate,
+        'taxCountryCode': pricing.countryCode,
+        'currency': pricing.currency.toLowerCase(),
+        'supportedPaymentProviders': supportedPaymentProviders,
+        'paySplit': <String, dynamic>{
+          'adminPercent': (pricing.adminRate * 100).round(),
+          'adminFeeCents': pricing.adminFeeCents,
+          'providerPayoutCents': pricing.providerPayoutCents,
+        },
         'pickupAddress': _pickupAddress,
         'pickupLatitude': _pickupLatLng!.latitude,
         'pickupLongitude': _pickupLatLng!.longitude,
@@ -1463,6 +1575,16 @@ class _CustomerScreenState extends State<CustomerScreen> {
             'pickupAddress': _pickupAddress,
           },
         );
+        await _notifyStage(
+          requestId: docRef.id,
+          stage: 'provider_requested',
+          customerId: user.uid,
+          providerId: driverId,
+          customerTitle: 'Request sent',
+          customerBody: 'A nearby provider has been invited. You will pay after acceptance.',
+          providerTitle: 'New battery boost request',
+          providerBody: '$vehicleLabel needs a boost at $_pickupAddress.',
+        );
       }
     } catch (e) {
       if (mounted) {
@@ -1506,9 +1628,24 @@ class _CustomerScreenState extends State<CustomerScreen> {
         if (doc.id == currentUserId) continue;
 
         final data = doc.data();
+        final offered = (data['offeredServices'] as Map<String, dynamic>?) ?? <String, dynamic>{};
+        final supportsService = _serviceType == _serviceTypeBoost
+            ? (offered[_serviceTypeBoost] as bool?) ?? true
+            : (offered[_serviceType] as bool?) ?? false;
+        final acceptsNotifications =
+            (data['receiveServiceRequestNotifications'] as bool?) ?? true;
+        if (!supportsService || !acceptsNotifications) {
+          continue;
+        }
         final latitude = (data['latitude'] as num?)?.toDouble() ?? 0.0;
         final longitude = (data['longitude'] as num?)?.toDouble() ?? 0.0;
         final email = (data['email'] ?? 'Booster') as String;
+        final countryCode = countryCodeFromAddress(_pickupAddress);
+        final currency = providerCurrencyFromData(
+          data,
+          fallbackCountryCode: countryCode,
+        );
+        final serviceCents = servicePriceFromProviderData(data, _serviceType);
 
         if (latitude == 0.0 && longitude == 0.0) {
           continue;
@@ -1532,6 +1669,8 @@ class _CustomerScreenState extends State<CustomerScreen> {
             longitude: longitude,
             distanceKm: distanceKm,
             etaMinutes: etaMinutes,
+            serviceCents: serviceCents,
+            currency: currency,
           ),
         );
       }
@@ -1699,12 +1838,24 @@ class _CustomerScreenState extends State<CustomerScreen> {
     }
     final data = userDoc.data() ?? <String, dynamic>{};
     final isFirstTimer = !(data['yearlySubscriptionPaid'] == true);
+    final requestId = _activeRequestId;
+    Map<String, dynamic> requestData = <String, dynamic>{};
+    if (requestId != null) {
+      final requestSnap =
+          await FirebaseFirestore.instance.collection('requests').doc(requestId).get();
+      requestData = requestSnap.data() ?? <String, dynamic>{};
+    }
 
     final proceed = await Navigator.of(context).push<bool>(
       MaterialPageRoute(
         builder: (_) => PaywallScreen(
           isFirstTimer: isFirstTimer,
           pickupAddress: _pickupAddress,
+          serviceCents: (requestData['serviceChargeCents'] as num?)?.toInt(),
+          taxCents: (requestData['taxCents'] as num?)?.toInt(),
+          totalCents: (requestData['totalChargeCents'] as num?)?.toInt(),
+          currency: (requestData['paymentCurrency'] ?? requestData['currency'])?.toString(),
+          paymentProvider: requestData['paymentProvider']?.toString(),
         ),
       ),
     );
@@ -1714,9 +1865,21 @@ class _CustomerScreenState extends State<CustomerScreen> {
       await FirebaseFirestore.instance.collection('requests').doc(_activeRequestId).update({
         'status': 'accepted',
         'paymentStatus': 'paid',
+        'stage': 'payment_confirmed',
         'paidAt': FieldValue.serverTimestamp(),
       });
       _showSuccessSnackBar('Payment confirmed. Provider is heading to your location.');
+      final providerId = _activeDriverId;
+      await _notifyStage(
+        requestId: _activeRequestId!,
+        stage: 'payment_confirmed',
+        customerId: user.uid,
+        providerId: providerId,
+        customerTitle: 'Payment confirmed',
+        customerBody: 'Your provider is cleared to head to your location.',
+        providerTitle: 'Customer payment confirmed',
+        providerBody: 'You can head to the customer now.',
+      );
     } else {
       // Optionally, cancel the request if payment not completed
       await FirebaseFirestore.instance.collection('requests').doc(_activeRequestId).update({
@@ -1796,8 +1959,22 @@ class _CustomerScreenState extends State<CustomerScreen> {
           .doc(_activeRequestId)
           .update({
         'status': 'completed',
+        'stage': 'completed',
         'completedAt': FieldValue.serverTimestamp(),
       });
+      final user = FirebaseAuth.instance.currentUser;
+      if (user != null) {
+        await _notifyStage(
+          requestId: _activeRequestId!,
+          stage: 'completed',
+          customerId: user.uid,
+          providerId: _activeDriverId,
+          customerTitle: 'Service completed',
+          customerBody: 'Your ${_serviceLabel(_activeServiceType ?? _serviceType)} is complete.',
+          providerTitle: 'Service completed',
+          providerBody: 'The customer marked this service complete.',
+        );
+      }
     } catch (e) {
       if (mounted) {
         _showErrorSnackBar('Could not mark complete. Try again.', Icons.error);
@@ -2333,7 +2510,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
                     Text(
                       nearestProvider == null
                           ? 'We will send your request to the nearest available battery boost provider. You only pay after they accept.'
-                          : '${nearestProvider.displayName} is ${nearestProvider.distanceKm.toStringAsFixed(1)} km away with an estimated ${nearestProvider.etaMinutes} min arrival.',
+                          : '${nearestProvider.displayName} is ${nearestProvider.distanceKm.toStringAsFixed(1)} km away • ETA ${nearestProvider.etaMinutes} min • ${formatMoney(nearestProvider.serviceCents, currency: nearestProvider.currency)} before tax.',
                       style: Theme.of(context)
                           .textTheme
                           .bodyLarge
@@ -2805,7 +2982,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
                                       ),
                                       const SizedBox(height: 2),
                                       Text(
-                                        '${booster.distanceKm.toStringAsFixed(1)} km • ETA ${booster.etaMinutes} min',
+                                        '${booster.distanceKm.toStringAsFixed(1)} km • ETA ${booster.etaMinutes} min • ${formatMoney(booster.serviceCents, currency: booster.currency)}',
                                         style: Theme.of(context)
                                             .textTheme
                                             .bodyMedium
@@ -4250,7 +4427,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
                       ? (isMechanic
                         ? 'No nearby mobile mechanics found yet. Update location and try again.'
                         : 'No nearby tow providers found yet. Update location and try again.')
-                      : '${_nearbyBoosters.length} nearby ${isMechanic ? 'mobile mechanics' : 'tow providers'} found. Nearest ETA ${_nearbyBoosters.first.etaMinutes} min.',
+                      : '${_nearbyBoosters.length} nearby ${isMechanic ? 'mobile mechanics' : 'tow providers'} found. Nearest ETA ${_nearbyBoosters.first.etaMinutes} min • ${formatMoney(_nearbyBoosters.first.serviceCents, currency: _nearbyBoosters.first.currency)} before tax.',
                     style: Theme.of(context)
                         .textTheme
                         .bodyLarge
@@ -4327,7 +4504,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
           infoWindow: InfoWindow(
             title: booster.displayName,
             snippet:
-                '${booster.distanceKm.toStringAsFixed(2)} km • ETA ${booster.etaMinutes} min',
+                '${booster.distanceKm.toStringAsFixed(2)} km • ETA ${booster.etaMinutes} min • ${formatMoney(booster.serviceCents, currency: booster.currency)}',
           ),
           icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueGreen),
         ),
@@ -4455,12 +4632,14 @@ class _TowPricing {
     required this.taxCents,
     required this.subscriptionCents,
     required this.totalCents,
+    this.currency = defaultPricingCurrency,
   });
 
   final int serviceCents;
   final int taxCents;
   final int subscriptionCents;
   final int totalCents;
+  final String currency;
 }
 
 class _TowPaymentConfirmScreen extends StatelessWidget {
@@ -4469,7 +4648,7 @@ class _TowPaymentConfirmScreen extends StatelessWidget {
   final _TowPricing pricing;
   final String serviceLabel;
 
-  String _toCad(int cents) => (cents / 100).toStringAsFixed(2);
+  String _toMoney(int cents) => formatMoney(cents, currency: pricing.currency);
 
   @override
   Widget build(BuildContext context) {
@@ -4521,17 +4700,17 @@ class _TowPaymentConfirmScreen extends StatelessWidget {
               ),
               child: Column(
                 children: [
-                  _PaymentLine(label: serviceLabel, value: '\$${_toCad(pricing.serviceCents)}'),
+                  _PaymentLine(label: serviceLabel, value: _toMoney(pricing.serviceCents)),
                   if (pricing.subscriptionCents > 0)
                     _PaymentLine(
                       label: 'Yearly subscription (first-time user)',
-                      value: '\$${_toCad(pricing.subscriptionCents)}',
+                      value: _toMoney(pricing.subscriptionCents),
                     ),
-                  _PaymentLine(label: 'Tax', value: '\$${_toCad(pricing.taxCents)}'),
+                  _PaymentLine(label: 'Tax', value: _toMoney(pricing.taxCents)),
                   const Divider(height: 24),
                   _PaymentLine(
                     label: 'Service Total',
-                    value: '\$${_toCad(pricing.totalCents)}',
+                    value: _toMoney(pricing.totalCents),
                     bold: true,
                   ),
                 ],
@@ -4852,6 +5031,8 @@ class _NearbyBooster {
     required this.longitude,
     required this.distanceKm,
     required this.etaMinutes,
+    required this.serviceCents,
+    required this.currency,
   });
 
   final String userId;
@@ -4860,6 +5041,8 @@ class _NearbyBooster {
   final double longitude;
   final double distanceKm;
   final int etaMinutes;
+  final int serviceCents;
+  final String currency;
 }
 
 // ── Pulse ring animation for searching state ───────────────────────────────
