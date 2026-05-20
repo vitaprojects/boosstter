@@ -4,8 +4,13 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:flutter/services.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'app_review_prompt.dart';
 import 'login_screen.dart';
 import 'customer_screen.dart';
+import 'review_screen.dart';
+import 'service_commerce.dart';
+import 'service_chat_screen.dart';
 
 class DriverScreen extends StatefulWidget {
   const DriverScreen({super.key});
@@ -23,16 +28,22 @@ class _DriverScreenState extends State<DriverScreen> {
   // Active job state
   String? _activeRequestId;
   String? _activeRequestStatus; // pending | accepted | en_route | completed
+  String? _activePaymentStatus;
   String? _activeServiceType;
+  String? _activeCustomerId;
   String? _activePickupAddress;
   double? _activePickupLat;
   double? _activePickupLng;
   String? _activeVehicleType;
+  String? _activeVehicleMake;
+  String? _activeVehicleModel;
+  String? _activeVehicleLabel;
   String? _activePlugType;
   String? _activeTowReason;
   StreamSubscription<QuerySnapshot>? _activeJobSub;
   StreamSubscription<QuerySnapshot>? _cancelledJobSub;
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _incomingAlertSub;
+  String? _lastProviderReviewPromptedRequestId;
 
   bool _providesBoost = true;
   bool _providesTow = false;
@@ -123,7 +134,7 @@ class _DriverScreenState extends State<DriverScreen> {
     _incomingAlertSub = FirebaseFirestore.instance
         .collection('requests')
         .where('driverId', isEqualTo: user.uid)
-        .where('status', isEqualTo: 'paid')
+        .where('status', whereIn: ['pending', 'paid'])
         .orderBy('timestamp', descending: true)
         .limit(1)
         .snapshots()
@@ -159,7 +170,7 @@ class _DriverScreenState extends State<DriverScreen> {
     _activeJobSub = FirebaseFirestore.instance
         .collection('requests')
         .where('driverId', isEqualTo: user.uid)
-      .where('status', whereIn: ['paid', 'accepted', 'en_route'])
+      .where('status', whereIn: ['pending', 'paid', 'accepted', 'en_route', 'completed'])
         .orderBy('timestamp', descending: true)
         .limit(1)
         .snapshots()
@@ -169,11 +180,16 @@ class _DriverScreenState extends State<DriverScreen> {
             setState(() {
               _activeRequestId = null;
               _activeRequestStatus = null;
+              _activePaymentStatus = null;
               _activeServiceType = null;
+              _activeCustomerId = null;
               _activePickupAddress = null;
               _activePickupLat = null;
               _activePickupLng = null;
               _activeVehicleType = null;
+              _activeVehicleMake = null;
+              _activeVehicleModel = null;
+              _activeVehicleLabel = null;
               _activePlugType = null;
               _activeTowReason = null;
             });
@@ -183,14 +199,27 @@ class _DriverScreenState extends State<DriverScreen> {
             setState(() {
               _activeRequestId = doc.id;
               _activeRequestStatus = data['status'];
+              _activePaymentStatus = data['paymentStatus']?.toString();
               _activeServiceType = data['serviceType']?.toString();
+              _activeCustomerId = data['customerId']?.toString();
               _activePickupAddress = data['pickupAddress'];
               _activePickupLat = (data['pickupLatitude'] as num?)?.toDouble();
               _activePickupLng = (data['pickupLongitude'] as num?)?.toDouble();
               _activeVehicleType = data['vehicleType']?.toString();
+              _activeVehicleMake = data['vehicleMake']?.toString();
+              _activeVehicleModel = data['vehicleModel']?.toString();
+              _activeVehicleLabel = data['vehicleLabel']?.toString();
               _activePlugType = data['plugType']?.toString();
               _activeTowReason = data['towReason']?.toString();
             });
+            if (data['status'] == 'completed' &&
+                data['providerReviewSubmitted'] != true &&
+                _lastProviderReviewPromptedRequestId != doc.id) {
+              _lastProviderReviewPromptedRequestId = doc.id;
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (mounted) _promptProviderReview(doc.id);
+              });
+            }
           }
         });
   }
@@ -318,15 +347,30 @@ class _DriverScreenState extends State<DriverScreen> {
     }
 
     try {
+      final requestRef = FirebaseFirestore.instance.collection('requests').doc(requestId);
+      final requestSnap = await requestRef.get();
+      final data = requestSnap.data() ?? <String, dynamic>{};
+      final customerId = data['customerId']?.toString();
       await FirebaseFirestore.instance
           .collection('requests')
           .doc(requestId)
           .update({
         'status': 'accepted',
+        'stage': 'provider_accepted',
         'driverId': user.uid,
         'driverEmail': user.email ?? '',
         'acceptedAt': FieldValue.serverTimestamp(),
       });
+      if (customerId != null) {
+        await writeStageNotification(
+          requestId: requestId,
+          recipientId: customerId,
+          audience: 'customer',
+          stage: 'provider_accepted',
+          title: 'Provider accepted',
+          body: 'Your provider accepted the order. Please confirm payment to continue.',
+        );
+      }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -338,16 +382,124 @@ class _DriverScreenState extends State<DriverScreen> {
 
   Future<void> _updateJobStatus(String status) async {
     if (_activeRequestId == null) return;
+    final requestId = _activeRequestId!;
     try {
+      final requestRef =
+          FirebaseFirestore.instance.collection('requests').doc(requestId);
+      final requestSnap = await requestRef.get();
+      final data = requestSnap.data() ?? <String, dynamic>{};
+      final customerId = data['customerId']?.toString();
       await FirebaseFirestore.instance
           .collection('requests')
           .doc(_activeRequestId)
-          .update({'status': status});
+          .update({
+        'status': status,
+        'stage': status,
+        if (status == 'en_route') 'enRouteAt': FieldValue.serverTimestamp(),
+        if (status == 'completed') 'completedAt': FieldValue.serverTimestamp(),
+      });
+      if (customerId != null) {
+        await writeStageNotification(
+          requestId: requestId,
+          recipientId: customerId,
+          audience: 'customer',
+          stage: status,
+          title: status == 'completed' ? 'Service completed' : 'Provider en route',
+          body: status == 'completed'
+              ? 'Your service has been marked complete.'
+              : 'Your provider is heading to your location.',
+        );
+      }
+      if (status == 'completed' && mounted) {
+        _lastProviderReviewPromptedRequestId = requestId;
+        await _promptProviderReview(requestId);
+      }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context)
             .showSnackBar(SnackBar(content: Text('Update failed: $e')));
       }
+    }
+  }
+
+  bool get _isActiveContactUnlocked {
+    final status = _activeRequestStatus;
+    return _activePaymentStatus == 'paid' ||
+        status == 'paid' ||
+        status == 'en_route' ||
+        status == 'completed';
+  }
+
+  Future<void> _messageActiveCustomer() async {
+    final requestId = _activeRequestId;
+    final customerId = _activeCustomerId;
+    if (requestId == null || customerId == null || !_isActiveContactUnlocked) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Messaging unlocks after payment confirmation.')),
+      );
+      return;
+    }
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => ServiceChatScreen(
+          requestId: requestId,
+          peerUserId: customerId,
+          peerLabel: 'Customer',
+        ),
+      ),
+    );
+  }
+
+  Future<void> _callActiveCustomer() async {
+    final customerId = _activeCustomerId;
+    if (customerId == null || !_isActiveContactUnlocked) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Calling unlocks after payment confirmation.')),
+      );
+      return;
+    }
+
+    try {
+      final userDoc =
+          await FirebaseFirestore.instance.collection('users').doc(customerId).get();
+      final data = userDoc.data() ?? <String, dynamic>{};
+      final phone = (data['phoneNumber'] ?? data['phone'] ?? '').toString().trim();
+      if (phone.isEmpty) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Customer phone number is not available.')),
+        );
+        return;
+      }
+      final launched = await launchUrl(
+        Uri(scheme: 'tel', path: phone),
+        mode: LaunchMode.externalApplication,
+      );
+      if (!launched && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Could not open phone dialer.')),
+        );
+      }
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not open phone dialer.')),
+      );
+    }
+  }
+
+  Future<void> _promptProviderReview(String requestId) async {
+    final reviewed = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => ReviewScreen(
+          requestId: requestId,
+          providerName: 'Customer',
+          isCustomerReviewing: false,
+        ),
+      ),
+    );
+    if (reviewed == true) {
+      await AppReviewPrompt.requestAfterSuccessfulTransaction(requestId);
     }
   }
 
@@ -633,6 +785,14 @@ class _DriverScreenState extends State<DriverScreen> {
     final status = _activeRequestStatus ?? 'paid';
     final isTowOrder = _activeServiceType == 'tow';
     final isMechanicOrder = _activeServiceType == 'mobile_mechanic';
+    final activeVehicleName = _activeVehicleLabel ??
+        [_activeVehicleMake, _activeVehicleModel]
+            .whereType<String>()
+            .where((part) => part.trim().isNotEmpty)
+            .join(' ');
+    final activeBoostVehicleSummary = activeVehicleName.trim().isEmpty
+        ? (_activeVehicleType == 'electric' ? 'Electric vehicle' : 'Regular vehicle')
+        : activeVehicleName;
     final Color statusColor;
     final IconData statusIcon;
     final String statusLabel;
@@ -640,6 +800,17 @@ class _DriverScreenState extends State<DriverScreen> {
     final String nextStatus;
 
     switch (status) {
+      case 'pending':
+        statusColor = const Color(0xFFF59E0B);
+        statusIcon = Icons.hourglass_top;
+        statusLabel = isTowOrder
+            ? 'Tow Request Waiting'
+            : isMechanicOrder
+                ? 'Mechanic Request Waiting'
+                : 'Boost Request Waiting';
+        actionLabel = 'Accept Request';
+        nextStatus = 'accepted';
+        break;
       case 'paid':
         statusColor = const Color(0xFFF59E0B);
         statusIcon = Icons.hourglass_top;
@@ -759,9 +930,7 @@ class _DriverScreenState extends State<DriverScreen> {
                               ? 'Tow service${_activeTowReason == null ? '' : ' • $_activeTowReason'}'
                             : isMechanicOrder
                               ? 'Mechanic service${_activeTowReason == null ? '' : ' • $_activeTowReason'}'
-                              : (_activeVehicleType == 'electric'
-                                  ? 'Electric vehicle${_activePlugType == null ? '' : ' • $_activePlugType'}'
-                                  : 'Regular vehicle'),
+                              : '$activeBoostVehicleSummary • ${_activeVehicleType == 'electric' ? 'Electric${_activePlugType == null ? '' : ' • $_activePlugType'}' : 'Regular boost'}',
                           style: const TextStyle(
                             color: Colors.white70,
                             fontSize: 13,
@@ -789,6 +958,32 @@ class _DriverScreenState extends State<DriverScreen> {
                     ],
                   ),
                 ],
+                if (_isActiveContactUnlocked && _activeCustomerId != null) ...[
+                  const SizedBox(height: 14),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed: _messageActiveCustomer,
+                          icon: const Icon(Icons.chat_bubble_outline),
+                          label: const Text('Message Customer'),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: ElevatedButton.icon(
+                          onPressed: _callActiveCustomer,
+                          icon: const Icon(Icons.phone),
+                          label: const Text('Call'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF16A34A),
+                            foregroundColor: Colors.white,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
                 const SizedBox(height: 20),
                 if (actionLabel.isNotEmpty)
                 SizedBox(
@@ -804,7 +999,7 @@ class _DriverScreenState extends State<DriverScreen> {
                           borderRadius: BorderRadius.circular(12)),
                     ),
                     onPressed: () {
-                      if (status == 'paid') {
+                      if (status == 'pending' || status == 'paid') {
                         _acceptRequest(_activeRequestId!);
                       } else {
                         _updateJobStatus(nextStatus);
@@ -828,7 +1023,7 @@ class _DriverScreenState extends State<DriverScreen> {
       stream: FirebaseFirestore.instance
           .collection('requests')
           .where('driverId', isEqualTo: user.uid)
-          .where('status', isEqualTo: 'paid')
+          .where('status', whereIn: ['pending', 'paid'])
           .orderBy('timestamp', descending: true)
           .snapshots(),
       builder: (context, snapshot) {
@@ -870,6 +1065,7 @@ class _DriverScreenState extends State<DriverScreen> {
             final serviceType = data['serviceType']?.toString() ?? 'boost';
             final address = data['pickupAddress'] ?? 'Unknown location';
             final vehicleType = data['vehicleType']?.toString();
+            final vehicleLabel = data['vehicleLabel']?.toString();
             final plugType = data['plugType']?.toString();
             final towReason = data['towReason']?.toString();
             final ts = data['timestamp'] as Timestamp?;
@@ -945,9 +1141,7 @@ class _DriverScreenState extends State<DriverScreen> {
                                 ? 'Tow${towReason == null ? '' : ' • $towReason'}'
                               : serviceType == 'mobile_mechanic'
                                 ? 'Mechanic${towReason == null ? '' : ' • $towReason'}'
-                                : (vehicleType == 'electric'
-                                    ? 'Electric${plugType == null ? '' : ' • $plugType'}'
-                                    : 'Regular'),
+                                : '${vehicleLabel ?? 'Vehicle'} • ${vehicleType == 'electric' ? 'Electric${plugType == null ? '' : ' • $plugType'}' : 'Regular boost'}',
                             style: const TextStyle(
                               color: Colors.white70,
                               fontSize: 13,

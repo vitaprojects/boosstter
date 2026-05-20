@@ -3,6 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'booster_logo.dart';
 import 'login_screen.dart';
+import 'service_commerce.dart';
 
 /// Pricing constants (CAD cents)
 const int _yearlySubscriptionCents = 900; // $9.00
@@ -10,13 +11,27 @@ const int _boostServiceCents = 2000; // $20.00
 const double _canadianTaxRate = 0.13;
 
 class PaywallScreen extends StatefulWidget {
-  const PaywallScreen({super.key, this.isFirstTimer = true, this.pickupAddress});
+  const PaywallScreen({
+    super.key,
+    this.isFirstTimer = true,
+    this.pickupAddress,
+    this.serviceCents,
+    this.taxCents,
+    this.totalCents,
+    this.currency,
+    this.paymentProvider,
+  });
 
   /// If false, subscription row is hidden (user already subscribed)
   final bool isFirstTimer;
 
   /// Used to compute tax based on region
   final String? pickupAddress;
+  final int? serviceCents;
+  final int? taxCents;
+  final int? totalCents;
+  final String? currency;
+  final String? paymentProvider;
 
   @override
   State<PaywallScreen> createState() => _PaywallScreenState();
@@ -34,15 +49,20 @@ class _PaywallScreenState extends State<PaywallScreen> {
         addr.contains(', bc');
   }
 
+  String get _currency => widget.currency?.toUpperCase() ?? defaultPricingCurrency;
+
+  int get _serviceCents => widget.serviceCents ?? _boostServiceCents;
+
   int get _taxCents =>
-      _isCanadian ? (_boostServiceCents * _canadianTaxRate).round() : 0;
+      widget.taxCents ?? (_isCanadian ? (_serviceCents * _canadianTaxRate).round() : 0);
 
   int get _totalCents =>
-      _boostServiceCents +
+      widget.totalCents ??
+      _serviceCents +
       _taxCents +
       (widget.isFirstTimer ? _yearlySubscriptionCents : 0);
 
-  String _fmt(int cents) => '\$${(cents / 100).toStringAsFixed(2)}';
+  String _fmt(int cents) => formatMoney(cents, currency: _currency);
 
   Future<void> _activateAndProceed() async {
     final user = FirebaseAuth.instance.currentUser;
@@ -141,7 +161,7 @@ class _PaywallScreenState extends State<PaywallScreen> {
               iconColor: const Color(0xFF22D3EE),
               title: 'Battery Boost Service',
               subtitle: 'Roadside battery jump-start by a nearby provider',
-              trailing: _fmt(_boostServiceCents),
+              trailing: _fmt(_serviceCents),
             ),
             const SizedBox(height: 12),
 
@@ -156,6 +176,14 @@ class _PaywallScreenState extends State<PaywallScreen> {
               ),
               const SizedBox(height: 12),
             ],
+            _SectionCard(
+              icon: Icons.account_balance_wallet_outlined,
+              iconColor: const Color(0xFF16A34A),
+              title: 'Payment Rail',
+              subtitle: 'Preferred checkout: ${(widget.paymentProvider ?? defaultPaymentProvider).toUpperCase()}',
+              trailing: _currency,
+            ),
+            const SizedBox(height: 12),
 
             // Total
             Container(
@@ -264,7 +292,7 @@ class _PaywallScreenState extends State<PaywallScreen> {
                 const Icon(Icons.lock, size: 14, color: Colors.grey),
                 const SizedBox(width: 6),
                 Text(
-                  'Payments secured by Stripe',
+                  'Payments secured by ${(widget.paymentProvider ?? defaultPaymentProvider).toUpperCase()}',
                   style: Theme.of(context)
                       .textTheme
                       .bodySmall

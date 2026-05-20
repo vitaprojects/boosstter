@@ -2,6 +2,8 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import 'service_commerce.dart';
+
 class TransactionTrackingScreen extends StatelessWidget {
   const TransactionTrackingScreen({super.key});
 
@@ -9,6 +11,8 @@ class TransactionTrackingScreen extends StatelessWidget {
 
   Color _statusColor(String status) {
     switch (status) {
+      case 'pending':
+        return const Color(0xFFF59E0B);
       case 'paid':
         return const Color(0xFFF59E0B);
       case 'accepted':
@@ -37,8 +41,10 @@ class TransactionTrackingScreen extends StatelessWidget {
 
   String _statusLabel(String status) {
     switch (status) {
+      case 'pending':
+        return 'Provider Requested';
       case 'paid':
-        return 'Waiting for Provider';
+        return 'Payment Confirmed';
       case 'accepted':
         return 'Provider Accepted';
       case 'en_route':
@@ -127,6 +133,14 @@ class TransactionTrackingScreen extends StatelessWidget {
                       (data['creditedAmountCents'] as num?)?.toInt() ??
                       0;
                     final paymentProvider = (data['paymentProvider'] ?? 'in_app').toString();
+                    final taxCents = (data['taxCents'] as num?)?.toInt() ?? 0;
+                    final adminFeeCents = (data['adminFeeCents'] as num?)?.toInt() ?? 0;
+                    final providerPayoutCents =
+                        (data['providerPayoutCents'] as num?)?.toInt() ?? 0;
+                    final currency =
+                        (data['paymentCurrency'] ?? data['currency'] ?? defaultPricingCurrency)
+                            .toString()
+                            .toUpperCase();
                     final creditApplied = data['creditApplied'] == true;
                     final creditedAmount = (data['creditedAmountCents'] as num?)?.toInt() ?? 0;
                     final refundRequestStatus = (data['refundRequestStatus'] ?? 'none').toString();
@@ -188,7 +202,7 @@ class TransactionTrackingScreen extends StatelessWidget {
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
                                 Text(
-                                  'Payment: ${paymentAmount > 0 ? _fmtCadCents(paymentAmount) : 'N/A'} • ${paymentProvider.toUpperCase()}',
+                                  'Payment: ${paymentAmount > 0 ? formatMoney(paymentAmount, currency: currency) : 'N/A'} • ${paymentProvider.toUpperCase()}',
                                   style: const TextStyle(
                                     color: Color(0xFF0F172A),
                                     fontWeight: FontWeight.w600,
@@ -201,6 +215,17 @@ class TransactionTrackingScreen extends StatelessWidget {
                                     'Credit applied: ${_fmtCadCents(creditedAmount)}',
                                     style: const TextStyle(
                                       color: Color(0xFF065F46),
+                                      fontWeight: FontWeight.w600,
+                                      fontSize: 12,
+                                    ),
+                                  ),
+                                ],
+                                if (taxCents > 0 || adminFeeCents > 0 || providerPayoutCents > 0) ...[
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    'Tax ${formatMoney(taxCents, currency: currency)} • Admin ${formatMoney(adminFeeCents, currency: currency)} • Provider ${formatMoney(providerPayoutCents, currency: currency)}',
+                                    style: const TextStyle(
+                                      color: Color(0xFF334155),
                                       fontWeight: FontWeight.w600,
                                       fontSize: 12,
                                     ),
