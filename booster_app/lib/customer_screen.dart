@@ -1295,7 +1295,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
     }
 
     if (_pickupLatLng == null || _pickupAddress == null) {
-      _showErrorSnackBar('Please save your pickup location first', Icons.place);
+      _showErrorSnackBar('Please save your vehicle location first', Icons.place);
       return;
     }
 
@@ -1567,7 +1567,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
     }
 
     if (_pickupLatLng == null || _pickupAddress == null) {
-      _showErrorSnackBar('Please save a pickup location first', Icons.place);
+      _showErrorSnackBar('Please save a vehicle location first', Icons.place);
       return;
     }
 
@@ -1693,7 +1693,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
 
   Future<void> _searchNearbyBoosters() async {
     if (_pickupLatLng == null) {
-      _showErrorSnackBar('Set a pickup location first', Icons.place);
+      _showErrorSnackBar('Set a vehicle location first', Icons.place);
       return;
     }
 
@@ -2557,7 +2557,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
                               ),
                               const SizedBox(height: 4),
                               Text(
-                                'Review your car, pickup location, and nearest provider before sending the order. Payment comes after a provider accepts.',
+                                'Review your car, vehicle location, and nearest provider before sending the order. Payment comes after a provider accepts.',
                                 style: Theme.of(context)
                                     .textTheme
                                     .bodyLarge
@@ -2804,7 +2804,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
                                     ),
                                     const SizedBox(height: 4),
                                     Text(
-                                      'Tell us your car, confirm pickup, preview nearby providers, then send the order before payment.',
+                                      'Tell us your car, confirm vehicle location, preview nearby providers, then send the order before payment.',
                                       style: Theme.of(context)
                                           .textTheme
                                           .bodyLarge
@@ -3005,7 +3005,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              'Pickup Location Confirmed',
+                              'Vehicle Location Confirmed',
                               style: Theme.of(context)
                                   .textTheme
                                   .titleMedium
@@ -3068,7 +3068,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
                     const SizedBox(height: 8),
                     if (_pickupAddress == null)
                       Text(
-                        'Choose boost type and continue to set location first.',
+                        'Choose boost type and continue to set vehicle location first.',
                         style: Theme.of(context)
                             .textTheme
                             .bodyLarge
@@ -3190,7 +3190,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
                           ),
                           child: Text(
                             _pickupAddress == null
-                                ? 'Set Pickup Location'
+                                ? 'Set Vehicle Location'
                                 : 'Send Request to Nearest Provider',
                             style: TextStyle(
                               fontSize: 18,
@@ -4143,7 +4143,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
                               _towStep == 1
                                 ? stepOneTitle
                                 : _towStep == 2
-                                  ? 'Set Your Location'
+                                  ? 'Set Vehicle Location'
                                   : _towStep == 3
                                     ? stepThreeTitle
                                     : submittedTitle,
@@ -4381,7 +4381,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
                               children: [
                                 Icon(Icons.my_location, color: Color(0xFF2BC8E8)),
                                 SizedBox(width: 8),
-                                Text('Detected Location', style: TextStyle(fontWeight: FontWeight.w700)),
+                                Text('Detected Vehicle Location', style: TextStyle(fontWeight: FontWeight.w700)),
                               ],
                             ),
                             const SizedBox(height: 8),
@@ -4434,7 +4434,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
                           ),
                           child: Text(
                             _towLocationTabIndex == 0
-                                ? 'Use Current Location'
+                                ? 'Use Current Vehicle Location'
                                 : 'Save Address',
                             style: const TextStyle(
                               fontSize: 18,
@@ -5817,7 +5817,7 @@ class _PickupSelectorSheetState extends State<_PickupSelectorSheet> {
             const TabBar(
               tabs: [
                 Tab(text: 'Enter Address'),
-                Tab(text: 'Use Current Location'),
+                Tab(text: 'Use Current Vehicle Location'),
               ],
             ),
             const SizedBox(height: 12),
@@ -5871,7 +5871,7 @@ class _PickupSelectorSheetState extends State<_PickupSelectorSheet> {
                                 _isLoadingCurrentLocationPreview
                                     ? 'Detecting your current address...'
                                     : (_currentLocationPreviewAddress ??
-                                        'Use your current GPS location as pickup address.'),
+                                        'Use your current GPS location as the vehicle location.'),
                                 style: Theme.of(context)
                                     .textTheme
                                     .bodyMedium

@@ -443,7 +443,7 @@ class _MainServiceHub extends StatelessWidget {
             _ServiceChoiceCard(
               title: 'Get a Tow',
               subtitle:
-                  'Request towing assistance and share your pickup details for dispatch.',
+                  'Request towing assistance and share your vehicle location details for dispatch.',
               icon: Icons.local_shipping,
               leading: const _TowTruckBadge(),
               accent: const Color(0xFF0EA5E9),

@@ -99,7 +99,7 @@ class _ServiceChatScreenState extends State<ServiceChatScreen> {
                       child: Padding(
                         padding: const EdgeInsets.all(24),
                         child: Text(
-                          'No messages yet. Use this chat for pickup details and service updates.',
+                          'No messages yet. Use this chat for vehicle location details and service updates.',
                           textAlign: TextAlign.center,
                           style: Theme.of(context)
                               .textTheme
