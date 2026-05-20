@@ -28,6 +28,9 @@ class _DriverScreenState extends State<DriverScreen> {
   double? _activePickupLat;
   double? _activePickupLng;
   String? _activeVehicleType;
+  String? _activeVehicleMake;
+  String? _activeVehicleModel;
+  String? _activeVehicleLabel;
   String? _activePlugType;
   String? _activeTowReason;
   StreamSubscription<QuerySnapshot>? _activeJobSub;
@@ -123,7 +126,7 @@ class _DriverScreenState extends State<DriverScreen> {
     _incomingAlertSub = FirebaseFirestore.instance
         .collection('requests')
         .where('driverId', isEqualTo: user.uid)
-        .where('status', isEqualTo: 'paid')
+        .where('status', whereIn: ['pending', 'paid'])
         .orderBy('timestamp', descending: true)
         .limit(1)
         .snapshots()
@@ -159,7 +162,7 @@ class _DriverScreenState extends State<DriverScreen> {
     _activeJobSub = FirebaseFirestore.instance
         .collection('requests')
         .where('driverId', isEqualTo: user.uid)
-      .where('status', whereIn: ['paid', 'accepted', 'en_route'])
+      .where('status', whereIn: ['pending', 'paid', 'accepted', 'en_route'])
         .orderBy('timestamp', descending: true)
         .limit(1)
         .snapshots()
@@ -174,6 +177,9 @@ class _DriverScreenState extends State<DriverScreen> {
               _activePickupLat = null;
               _activePickupLng = null;
               _activeVehicleType = null;
+              _activeVehicleMake = null;
+              _activeVehicleModel = null;
+              _activeVehicleLabel = null;
               _activePlugType = null;
               _activeTowReason = null;
             });
@@ -188,6 +194,9 @@ class _DriverScreenState extends State<DriverScreen> {
               _activePickupLat = (data['pickupLatitude'] as num?)?.toDouble();
               _activePickupLng = (data['pickupLongitude'] as num?)?.toDouble();
               _activeVehicleType = data['vehicleType']?.toString();
+              _activeVehicleMake = data['vehicleMake']?.toString();
+              _activeVehicleModel = data['vehicleModel']?.toString();
+              _activeVehicleLabel = data['vehicleLabel']?.toString();
               _activePlugType = data['plugType']?.toString();
               _activeTowReason = data['towReason']?.toString();
             });
@@ -633,6 +642,14 @@ class _DriverScreenState extends State<DriverScreen> {
     final status = _activeRequestStatus ?? 'paid';
     final isTowOrder = _activeServiceType == 'tow';
     final isMechanicOrder = _activeServiceType == 'mobile_mechanic';
+    final activeVehicleName = _activeVehicleLabel ??
+        [_activeVehicleMake, _activeVehicleModel]
+            .whereType<String>()
+            .where((part) => part.trim().isNotEmpty)
+            .join(' ');
+    final activeBoostVehicleSummary = activeVehicleName.trim().isEmpty
+        ? (_activeVehicleType == 'electric' ? 'Electric vehicle' : 'Regular vehicle')
+        : activeVehicleName;
     final Color statusColor;
     final IconData statusIcon;
     final String statusLabel;
@@ -640,6 +657,17 @@ class _DriverScreenState extends State<DriverScreen> {
     final String nextStatus;
 
     switch (status) {
+      case 'pending':
+        statusColor = const Color(0xFFF59E0B);
+        statusIcon = Icons.hourglass_top;
+        statusLabel = isTowOrder
+            ? 'Tow Request Waiting'
+            : isMechanicOrder
+                ? 'Mechanic Request Waiting'
+                : 'Boost Request Waiting';
+        actionLabel = 'Accept Request';
+        nextStatus = 'accepted';
+        break;
       case 'paid':
         statusColor = const Color(0xFFF59E0B);
         statusIcon = Icons.hourglass_top;
@@ -759,9 +787,7 @@ class _DriverScreenState extends State<DriverScreen> {
                               ? 'Tow service${_activeTowReason == null ? '' : ' • $_activeTowReason'}'
                             : isMechanicOrder
                               ? 'Mechanic service${_activeTowReason == null ? '' : ' • $_activeTowReason'}'
-                              : (_activeVehicleType == 'electric'
-                                  ? 'Electric vehicle${_activePlugType == null ? '' : ' • $_activePlugType'}'
-                                  : 'Regular vehicle'),
+                              : '$activeBoostVehicleSummary • ${_activeVehicleType == 'electric' ? 'Electric${_activePlugType == null ? '' : ' • $_activePlugType'}' : 'Regular boost'}',
                           style: const TextStyle(
                             color: Colors.white70,
                             fontSize: 13,
@@ -804,7 +830,7 @@ class _DriverScreenState extends State<DriverScreen> {
                           borderRadius: BorderRadius.circular(12)),
                     ),
                     onPressed: () {
-                      if (status == 'paid') {
+                      if (status == 'pending' || status == 'paid') {
                         _acceptRequest(_activeRequestId!);
                       } else {
                         _updateJobStatus(nextStatus);
@@ -828,7 +854,7 @@ class _DriverScreenState extends State<DriverScreen> {
       stream: FirebaseFirestore.instance
           .collection('requests')
           .where('driverId', isEqualTo: user.uid)
-          .where('status', isEqualTo: 'paid')
+          .where('status', whereIn: ['pending', 'paid'])
           .orderBy('timestamp', descending: true)
           .snapshots(),
       builder: (context, snapshot) {
@@ -870,6 +896,7 @@ class _DriverScreenState extends State<DriverScreen> {
             final serviceType = data['serviceType']?.toString() ?? 'boost';
             final address = data['pickupAddress'] ?? 'Unknown location';
             final vehicleType = data['vehicleType']?.toString();
+            final vehicleLabel = data['vehicleLabel']?.toString();
             final plugType = data['plugType']?.toString();
             final towReason = data['towReason']?.toString();
             final ts = data['timestamp'] as Timestamp?;
@@ -945,9 +972,7 @@ class _DriverScreenState extends State<DriverScreen> {
                                 ? 'Tow${towReason == null ? '' : ' • $towReason'}'
                               : serviceType == 'mobile_mechanic'
                                 ? 'Mechanic${towReason == null ? '' : ' • $towReason'}'
-                                : (vehicleType == 'electric'
-                                    ? 'Electric${plugType == null ? '' : ' • $plugType'}'
-                                    : 'Regular'),
+                                : '${vehicleLabel ?? 'Vehicle'} • ${vehicleType == 'electric' ? 'Electric${plugType == null ? '' : ' • $plugType'}' : 'Regular boost'}',
                             style: const TextStyle(
                               color: Colors.white70,
                               fontSize: 13,
