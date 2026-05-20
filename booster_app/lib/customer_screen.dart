@@ -1596,6 +1596,15 @@ class _CustomerScreenState extends State<CustomerScreen> {
         _notifyProviderEta(_activeDriverId!);
       }
 
+      // Trigger review prompt when job completes
+      if (prevStatus != 'completed' && newStatus == 'completed') {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _promptReview(doc.id);
+        });
+      }
+    });
+  }
+
   // Show paywall after provider accepts
   Future<void> _showPaywallAfterAcceptance() async {
     final user = FirebaseAuth.instance.currentUser;
@@ -1629,15 +1638,6 @@ class _CustomerScreenState extends State<CustomerScreen> {
       });
       _showErrorSnackBar('Payment not completed. Request cancelled.', Icons.payment);
     }
-  }
-
-      // Trigger review prompt when job completes
-      if (prevStatus != 'completed' && newStatus == 'completed') {
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) _promptReview(doc.id);
-        });
-      }
-    });
   }
 
   Future<void> _notifyProviderEta(String driverId) async {
