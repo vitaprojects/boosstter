@@ -1845,6 +1845,10 @@ class _CustomerScreenState extends State<CustomerScreen> {
           await FirebaseFirestore.instance.collection('requests').doc(requestId).get();
       requestData = requestSnap.data() ?? <String, dynamic>{};
     }
+    if (!mounted) {
+      _isShowingPostAcceptancePaywall = false;
+      return;
+    }
 
     final proceed = await Navigator.of(context).push<bool>(
       MaterialPageRoute(
