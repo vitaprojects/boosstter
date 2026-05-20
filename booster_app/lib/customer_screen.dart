@@ -7,9 +7,13 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:geocoding/geocoding.dart';
 import 'package:flutter/services.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'app_review_prompt.dart';
 import 'login_screen.dart';
 import 'paywall_screen.dart';
 import 'review_screen.dart';
+import 'service_commerce.dart';
+import 'service_chat_screen.dart';
 import 'stripe_payment_service.dart';
 import 'transaction_tracking_screen.dart';
 
@@ -22,23 +26,40 @@ class CustomerScreen extends StatefulWidget {
 
 class _CustomerScreenState extends State<CustomerScreen> {
   // Firestore vehicle types
-  List<String> _vehicleMakes = [];
-  Map<String, List<String>> _vehicleModels = {};
+  List<String> _vehicleMakes = _defaultVehicleMakes();
+  Map<String, List<String>> _vehicleModels = _defaultVehicleModels();
   String? _selectedVehicleMake;
   String? _selectedVehicleModel;
   bool _isLoadingVehicleTypes = false;
 
   Future<void> _fetchVehicleTypes() async {
-    setState(() { _isLoadingVehicleTypes = true; });
-    final makesSnap = await FirebaseFirestore.instance.collection('vehicle_types').get();
-    final makes = <String>[];
-    final models = <String, List<String>>{};
-    for (final doc in makesSnap.docs) {
-      makes.add(doc.id);
-      final data = doc.data();
-      final modelList = (data['models'] as List?)?.map((e) => e.toString()).toList() ?? [];
-      models[doc.id] = modelList;
+    if (mounted) {
+      setState(() { _isLoadingVehicleTypes = true; });
     }
+
+    final models = <String, List<String>>{};
+    for (final entry in _defaultVehicleDatabase.entries) {
+      models[entry.key] = List<String>.from(entry.value);
+    }
+
+    try {
+      final makesSnap = await FirebaseFirestore.instance.collection('vehicle_types').get();
+      for (final doc in makesSnap.docs) {
+        final data = doc.data();
+        final modelList =
+            (data['models'] as List?)?.map((e) => e.toString()).toList() ?? [];
+        _mergeVehicleModels(models, doc.id, modelList);
+      }
+    } catch (_) {
+      // Keep the built-in list available if Firestore is offline or not seeded yet.
+    }
+
+    final makes = models.keys.toList()..sort();
+    for (final make in makes) {
+      models[make] = (models[make] ?? <String>[]).toSet().toList()..sort();
+    }
+
+    if (!mounted) return;
     setState(() {
       _vehicleMakes = makes;
       _vehicleModels = models;
@@ -47,24 +68,42 @@ class _CustomerScreenState extends State<CustomerScreen> {
   }
 
   Future<void> _addManualVehicleType(String make, String model) async {
-    final ref = FirebaseFirestore.instance.collection('vehicle_types').doc(make);
-    final doc = await ref.get();
-    if (doc.exists) {
-      final data = doc.data();
-      final models = (data?['models'] as List?)?.map((e) => e.toString()).toList() ?? [];
-      if (!models.contains(model)) {
-        models.add(model);
-        await ref.update({'models': models});
-      }
-    } else {
-      await ref.set({'models': [model]});
-    }
+    final normalizedMake = _normalizeVehicleText(make);
+    final normalizedModel = _normalizeVehicleText(model);
+    if (normalizedMake.isEmpty || normalizedModel.isEmpty) return;
+
+    final ref = FirebaseFirestore.instance.collection('vehicle_types').doc(normalizedMake);
+    await ref.set({
+      'models': FieldValue.arrayUnion([normalizedModel]),
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
     await _fetchVehicleTypes();
+  }
+
+  static void _mergeVehicleModels(
+    Map<String, List<String>> target,
+    String make,
+    List<String> models,
+  ) {
+    final normalizedMake = _normalizeVehicleText(make);
+    if (normalizedMake.isEmpty) return;
+    final existing = target.putIfAbsent(normalizedMake, () => <String>[]);
+    for (final model in models) {
+      final normalizedModel = _normalizeVehicleText(model);
+      if (normalizedModel.isNotEmpty && !existing.contains(normalizedModel)) {
+        existing.add(normalizedModel);
+      }
+    }
+  }
+
+  static String _normalizeVehicleText(String value) {
+    return value.trim().replaceAll(RegExp(r'\s+'), ' ');
   }
   Position? _currentPosition;
   bool _isLoading = true;
   bool _hasLocationPermission = false;
   bool _isSearchingBoosters = false;
+  bool _isShowingPostAcceptancePaywall = false;
   int _flowStep = 1;
   GoogleMapController? _mapController;
 
@@ -76,6 +115,9 @@ class _CustomerScreenState extends State<CustomerScreen> {
   String? _plugType;
   String? _selectedBoostVehicleType;
   String? _selectedBoostPlugType;
+  bool _showBoostManualVehicle = false;
+  final TextEditingController _boostManualMakeController = TextEditingController();
+  final TextEditingController _boostManualModelController = TextEditingController();
   final TextEditingController _boostProviderNoteController = TextEditingController();
   String? _selectedTowVehicle;
   bool _showTowManualVehicle = false;
@@ -95,6 +137,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _requestWatchSub;
   String? _activeRequestId;
   String? _activeRequestStatus;
+  String? _activePaymentStatus;
   String? _activeDriverId;
   String? _activeServiceType;
   String? _providerEtaSummary;
@@ -147,6 +190,8 @@ class _CustomerScreenState extends State<CustomerScreen> {
   @override
   void dispose() {
     _requestWatchSub?.cancel();
+    _boostManualMakeController.dispose();
+    _boostManualModelController.dispose();
     _boostProviderNoteController.dispose();
     _towManualVehicleController.dispose();
     _towManualAddressController.dispose();
@@ -673,43 +718,6 @@ class _CustomerScreenState extends State<CustomerScreen> {
     });
   }
 
-  Future<bool> _ensureSubscribed() async {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) {
-      return false;
-    }
-
-    final userDoc = await FirebaseFirestore.instance
-        .collection('users')
-        .doc(user.uid)
-        .get();
-
-    if (!mounted) return false;
-
-    if (!userDoc.exists) {
-      _showErrorSnackBar('User profile not found', Icons.person_off);
-      return false;
-    }
-
-    final data = userDoc.data() ?? <String, dynamic>{};
-    final bool isSubscribed = data['yearlySubscriptionPaid'] == true || data['isSubscribed'] == true;
-    if (isSubscribed) {
-      return true;
-    }
-
-    final result = await Navigator.push<bool>(
-      context,
-      MaterialPageRoute(
-        builder: (context) => PaywallScreen(
-          isFirstTimer: true,
-          pickupAddress: _pickupAddress,
-        ),
-      ),
-    );
-
-    return result == true;
-  }
-
   Future<void> _openPickupSelector({
     required String vehicleType,
     String? plugType,
@@ -751,18 +759,81 @@ class _CustomerScreenState extends State<CustomerScreen> {
       return false;
     }
 
-    return true;
+    return _boostVehicleLabel != null;
   }
 
-  Future<void> _continueBoostFlow() async {
+  String? get _boostVehicleMake {
+    if (_showBoostManualVehicle) {
+      final make = _normalizeVehicleText(_boostManualMakeController.text);
+      return make.isEmpty ? null : make;
+    }
+    return _selectedVehicleMake;
+  }
+
+  String? get _boostVehicleModel {
+    if (_showBoostManualVehicle) {
+      final model = _normalizeVehicleText(_boostManualModelController.text);
+      return model.isEmpty ? null : model;
+    }
+    return _selectedVehicleModel;
+  }
+
+  String? get _boostVehicleLabel {
+    final make = _boostVehicleMake;
+    final model = _boostVehicleModel;
+    if (make == null || model == null) return null;
+    return '$make $model';
+  }
+
+  String get _boostTypeLabel {
+    if (_selectedBoostVehicleType == _electricVehicleType) {
+      return 'Electric boost${_selectedBoostPlugType == null ? '' : ' • $_selectedBoostPlugType'}';
+    }
+    return 'Regular battery boost';
+  }
+
+  Future<bool> _prepareBoostVehicleSelection() async {
     if (_selectedBoostVehicleType == null) {
       _showErrorSnackBar('Choose Regular or Electric to continue', Icons.ev_station);
-      return;
+      return false;
     }
 
     if (_selectedBoostVehicleType == _electricVehicleType &&
         _selectedBoostPlugType == null) {
       _showErrorSnackBar('Select your EV plug type to continue', Icons.power);
+      return false;
+    }
+
+    final make = _boostVehicleMake;
+    final model = _boostVehicleModel;
+    if (make == null || model == null) {
+      _showErrorSnackBar('Select your car make and model, or enter it manually', Icons.directions_car);
+      return false;
+    }
+
+    if (_showBoostManualVehicle) {
+      try {
+        await _addManualVehicleType(make, model);
+        if (!mounted) return false;
+        setState(() {
+          _selectedVehicleMake = make;
+          _selectedVehicleModel = model;
+          _showBoostManualVehicle = false;
+        });
+        _showSuccessSnackBar('$make $model saved to the car list');
+      } catch (_) {
+        if (!mounted) return false;
+        _showErrorSnackBar('Could not save that car. Please try again.', Icons.cloud_off);
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  Future<void> _continueBoostFlow() async {
+    final isReady = await _prepareBoostVehicleSelection();
+    if (!isReady || !mounted) {
       return;
     }
 
@@ -771,6 +842,129 @@ class _CustomerScreenState extends State<CustomerScreen> {
       plugType: _selectedBoostVehicleType == _electricVehicleType
           ? _selectedBoostPlugType
           : null,
+    );
+  }
+
+  Future<void> _openBoostMakePicker() async {
+    _fetchVehicleTypes();
+    final selected = await _showVehicleOptionPicker(
+      title: 'Choose car make',
+      options: _vehicleMakes,
+      selectedValue: _selectedVehicleMake,
+    );
+    if (selected == null || !mounted) return;
+    setState(() {
+      _showBoostManualVehicle = false;
+      _selectedVehicleMake = selected;
+      _selectedVehicleModel = null;
+    });
+  }
+
+  Future<void> _openBoostModelPicker() async {
+    final make = _selectedVehicleMake;
+    if (make == null) {
+      _showErrorSnackBar('Choose a car make first', Icons.directions_car);
+      return;
+    }
+
+    _fetchVehicleTypes();
+    final models = _vehicleModels[make] ?? <String>[];
+    final selected = await _showVehicleOptionPicker(
+      title: 'Choose $make model',
+      options: models,
+      selectedValue: _selectedVehicleModel,
+    );
+    if (selected == null || !mounted) return;
+    setState(() {
+      _showBoostManualVehicle = false;
+      _selectedVehicleModel = selected;
+    });
+  }
+
+  Future<void> _openTowMakePicker() async {
+    _fetchVehicleTypes();
+    final selected = await _showVehicleOptionPicker(
+      title: 'Choose vehicle make',
+      options: _vehicleMakes,
+      selectedValue: _selectedVehicleMake,
+    );
+    if (selected == null || !mounted) return;
+    setState(() {
+      _showTowManualVehicle = false;
+      _selectedVehicleMake = selected;
+      _selectedVehicleModel = null;
+      _selectedTowVehicle = null;
+    });
+  }
+
+  Future<void> _openTowModelPicker() async {
+    final make = _selectedVehicleMake;
+    if (make == null) {
+      _showErrorSnackBar('Choose a vehicle make first', Icons.directions_car);
+      return;
+    }
+
+    _fetchVehicleTypes();
+    final models = _vehicleModels[make] ?? <String>[];
+    final selected = await _showVehicleOptionPicker(
+      title: 'Choose $make model',
+      options: models,
+      selectedValue: _selectedVehicleModel,
+    );
+    if (selected == null || !mounted) return;
+    setState(() {
+      _showTowManualVehicle = false;
+      _selectedVehicleModel = selected;
+      _selectedTowVehicle = '$make $selected';
+    });
+  }
+
+  Future<String?> _showVehicleOptionPicker({
+    required String title,
+    required List<String> options,
+    String? selectedValue,
+  }) {
+    return showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) {
+        final sortedOptions = List<String>.from(options)..sort();
+        return SafeArea(
+          child: sortedOptions.isEmpty
+              ? Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Text(
+                    'No options available yet. Use manual entry below to add your car.',
+                    style: Theme.of(context).textTheme.bodyLarge,
+                  ),
+                )
+              : ListView(
+                  shrinkWrap: true,
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(20, 8, 20, 12),
+                      child: Text(
+                        title,
+                        style: Theme.of(context)
+                            .textTheme
+                            .titleLarge
+                            ?.copyWith(fontWeight: FontWeight.w800),
+                      ),
+                    ),
+                    ...sortedOptions.map((option) {
+                      final selected = option == selectedValue;
+                      return ListTile(
+                        title: Text(option),
+                        trailing: selected
+                            ? const Icon(Icons.check_circle, color: Color(0xFF5500FF))
+                            : null,
+                        onTap: () => Navigator.of(context).pop(option),
+                      );
+                    }),
+                  ],
+                ),
+        );
+      },
     );
   }
 
@@ -968,6 +1162,62 @@ class _CustomerScreenState extends State<CustomerScreen> {
     );
   }
 
+  Future<ServicePricingBreakdown> _pricingForProvider({
+    required String providerId,
+    required String serviceType,
+  }) async {
+    final providerDoc =
+        await FirebaseFirestore.instance.collection('users').doc(providerId).get();
+    final providerData = providerDoc.data();
+    final countryCode = countryCodeFromAddress(_pickupAddress);
+    final rawPaymentProvider =
+        (providerData?['preferredPaymentProvider'] as String?) ?? defaultPaymentProvider;
+    final paymentProvider = supportedPaymentProviders.contains(rawPaymentProvider)
+        ? rawPaymentProvider
+        : defaultPaymentProvider;
+
+    return buildServicePricing(
+      serviceType: serviceType,
+      serviceCents: servicePriceFromProviderData(providerData, serviceType),
+      countryCode: countryCode,
+      currency: providerCurrencyFromData(
+        providerData,
+        fallbackCountryCode: countryCode,
+      ),
+      paymentProvider: paymentProvider,
+    );
+  }
+
+  Future<void> _notifyStage({
+    required String requestId,
+    required String stage,
+    required String customerId,
+    String? providerId,
+    required String customerTitle,
+    required String customerBody,
+    String? providerTitle,
+    String? providerBody,
+  }) async {
+    await writeStageNotification(
+      requestId: requestId,
+      recipientId: customerId,
+      audience: 'customer',
+      stage: stage,
+      title: customerTitle,
+      body: customerBody,
+    );
+    if (providerId != null && providerTitle != null && providerBody != null) {
+      await writeStageNotification(
+        requestId: requestId,
+        recipientId: providerId,
+        audience: 'provider',
+        stage: stage,
+        title: providerTitle,
+        body: providerBody,
+      );
+    }
+  }
+
   String _serviceLabel(String serviceType) {
     switch (serviceType) {
       case _serviceTypeTow:
@@ -1083,7 +1333,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
     }
 
     if (_pickupLatLng == null || _pickupAddress == null) {
-      _showErrorSnackBar('Please save your pickup location first', Icons.place);
+      _showErrorSnackBar('Please save your vehicle location first', Icons.place);
       return;
     }
 
@@ -1121,7 +1371,19 @@ class _CustomerScreenState extends State<CustomerScreen> {
       return;
     }
 
-    final pricing = await _computeTowPricing();
+    final nearestProvider = _nearbyBoosters.first;
+    final servicePricing = await _pricingForProvider(
+      providerId: nearestProvider.userId,
+      serviceType: _serviceType,
+    );
+    final subscriptionPricing = await _computeTowPricing();
+    final pricing = _TowPricing(
+      serviceCents: servicePricing.serviceCents,
+      taxCents: servicePricing.taxCents,
+      subscriptionCents: subscriptionPricing.subscriptionCents,
+      totalCents: servicePricing.totalCents + subscriptionPricing.subscriptionCents,
+      currency: servicePricing.currency,
+    );
     if (!mounted) return;
 
     final proceed = await Navigator.of(context).push<bool>(
@@ -1158,8 +1420,6 @@ class _CustomerScreenState extends State<CustomerScreen> {
       return;
     }
 
-    final nearestProvider = _nearbyBoosters.first;
-
     try {
       final requestRef = await FirebaseFirestore.instance.collection('requests').add({
         'customerId': user.uid,
@@ -1167,7 +1427,8 @@ class _CustomerScreenState extends State<CustomerScreen> {
         'serviceType': _serviceType,
         'status': 'paid',
         'paidAt': FieldValue.serverTimestamp(),
-        'paymentProvider': 'in_app',
+        'paymentStatus': 'paid',
+        'paymentProvider': servicePricing.paymentProvider,
         'pickupAddress': _pickupAddress,
         'pickupLatitude': _pickupLatLng!.latitude,
         'pickupLongitude': _pickupLatLng!.longitude,
@@ -1181,7 +1442,21 @@ class _CustomerScreenState extends State<CustomerScreen> {
         'subscriptionChargeCents': pricing.subscriptionCents,
         'taxCents': pricing.taxCents,
         'totalChargeCents': pricing.totalCents,
-        'currency': 'cad',
+        'paymentAmount': pricing.totalCents,
+        'adminFeeCents': servicePricing.adminFeeCents,
+        'providerPayoutCents': servicePricing.providerPayoutCents,
+        'taxRate': servicePricing.taxRate,
+        'adminRate': servicePricing.adminRate,
+        'taxCountryCode': servicePricing.countryCode,
+        'currency': servicePricing.currency.toLowerCase(),
+        'paymentCurrency': servicePricing.currency.toLowerCase(),
+        'supportedPaymentProviders': supportedPaymentProviders,
+        'paySplit': <String, dynamic>{
+          'adminPercent': (servicePricing.adminRate * 100).round(),
+          'adminFeeCents': servicePricing.adminFeeCents,
+          'providerPayoutCents': servicePricing.providerPayoutCents,
+        },
+        'stage': 'payment_confirmed',
         'timestamp': FieldValue.serverTimestamp(),
       });
 
@@ -1209,6 +1484,16 @@ class _CustomerScreenState extends State<CustomerScreen> {
         ? 'Payment confirmed. Mobile mechanic request sent to nearest provider.'
         : 'Payment confirmed. Tow request sent to nearest provider.',
       );
+      await _notifyStage(
+        requestId: requestRef.id,
+        stage: 'payment_confirmed',
+        customerId: user.uid,
+        providerId: nearestProvider.userId,
+        customerTitle: 'Payment confirmed',
+        customerBody: 'Your ${_serviceLabel(_serviceType)} request was sent to the provider.',
+        providerTitle: 'New paid ${_serviceLabel(_serviceType)} order',
+        providerBody: 'A customer is waiting at $_pickupAddress.',
+      );
     } catch (_) {
       if (!mounted) return;
       _showErrorSnackBar(
@@ -1221,6 +1506,11 @@ class _CustomerScreenState extends State<CustomerScreen> {
   }
 
   Future<void> _confirmBoostAndRequest() async {
+    final selectionReady = await _prepareBoostVehicleSelection();
+    if (!selectionReady || !mounted) {
+      return;
+    }
+
     if (_pickupLatLng == null || _pickupAddress == null) {
       _showErrorSnackBar('No location set', Icons.place);
       return;
@@ -1249,7 +1539,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
       return;
     }
 
-    // Search and place request, but do NOT show paywall yet
+    // Search and place request, but do NOT show paywall until a provider accepts.
     setState(() {
       _isSearchingBoosters = true;
       _flowStep = 3;
@@ -1264,7 +1554,10 @@ class _CustomerScreenState extends State<CustomerScreen> {
     if (!mounted) return;
 
     if (_nearbyBoosters.isEmpty) {
-      setState(() => _noProvidersFound = true);
+      setState(() {
+        _noProvidersFound = true;
+        _flowStep = 4;
+      });
       await _trackBoostFlowEvent(
         'initial_search_no_providers',
         details: <String, dynamic>{
@@ -1312,7 +1605,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
     }
 
     if (_pickupLatLng == null || _pickupAddress == null) {
-      _showErrorSnackBar('Please save a pickup location first', Icons.place);
+      _showErrorSnackBar('Please save a vehicle location first', Icons.place);
       return;
     }
 
@@ -1326,25 +1619,52 @@ class _CustomerScreenState extends State<CustomerScreen> {
       return;
     }
 
-    final subscribed = await _ensureSubscribed();
-    if (!subscribed || !mounted) {
+    final vehicleMake = _boostVehicleMake;
+    final vehicleModel = _boostVehicleModel;
+    final vehicleLabel = _boostVehicleLabel;
+    if (_serviceType == _serviceTypeBoost &&
+        (vehicleMake == null || vehicleModel == null || vehicleLabel == null)) {
+      _showErrorSnackBar('Select your car make and model before requesting help', Icons.directions_car);
       return;
     }
 
     try {
+      final pricing = await _pricingForProvider(
+        providerId: driverId,
+        serviceType: _serviceTypeBoost,
+      );
       final docRef = await FirebaseFirestore.instance.collection('requests').add({
         'customerId': user.uid,
         'driverId': driverId,
         'serviceType': _serviceType,
-        'status': 'paid',
-        'paidAt': FieldValue.serverTimestamp(),
-        'paymentAmount': boostPaymentTotalCadCents,
-        'paymentCurrency': 'cad',
-        'paymentProvider': 'in_app',
+        'status': 'pending',
+        'stage': 'provider_requested',
+        'paymentAmount': pricing.totalCents,
+        'paymentCurrency': pricing.currency.toLowerCase(),
+        'paymentProvider': pricing.paymentProvider,
+        'paymentStatus': 'awaiting_provider_acceptance',
+        'serviceChargeCents': pricing.serviceCents,
+        'taxCents': pricing.taxCents,
+        'totalChargeCents': pricing.totalCents,
+        'adminFeeCents': pricing.adminFeeCents,
+        'providerPayoutCents': pricing.providerPayoutCents,
+        'taxRate': pricing.taxRate,
+        'adminRate': pricing.adminRate,
+        'taxCountryCode': pricing.countryCode,
+        'currency': pricing.currency.toLowerCase(),
+        'supportedPaymentProviders': supportedPaymentProviders,
+        'paySplit': <String, dynamic>{
+          'adminPercent': (pricing.adminRate * 100).round(),
+          'adminFeeCents': pricing.adminFeeCents,
+          'providerPayoutCents': pricing.providerPayoutCents,
+        },
         'pickupAddress': _pickupAddress,
         'pickupLatitude': _pickupLatLng!.latitude,
         'pickupLongitude': _pickupLatLng!.longitude,
         'vehicleType': _vehicleType,
+        'vehicleMake': vehicleMake,
+        'vehicleModel': vehicleModel,
+        'vehicleLabel': vehicleLabel,
         'towVehicleType': _serviceType == _serviceTypeTow ? _vehicleType : null,
         'plugType': _plugType,
         'boostProviderNote': _serviceType == _serviceTypeBoost && _plugType != null
@@ -1364,7 +1684,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
       if (mounted) {
         setState(() {
           _activeRequestId = docRef.id;
-          _activeRequestStatus = 'paid';
+          _activeRequestStatus = 'pending';
           _activeDriverId = driverId;
           _activeServiceType = _serviceTypeBoost;
           _flowStep = 4;
@@ -1372,7 +1692,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
         });
         _startSearchCycleCountdown();
         _showSuccessSnackBar(
-          'Payment confirmed. Request sent and waiting for provider acceptance.',
+          'Request sent. The paywall appears after the provider accepts.',
         );
         await _trackBoostFlowEvent(
           'boost_request_dispatched',
@@ -1381,6 +1701,16 @@ class _CustomerScreenState extends State<CustomerScreen> {
             'queueSize': _boostRetryQueue.length,
             'pickupAddress': _pickupAddress,
           },
+        );
+        await _notifyStage(
+          requestId: docRef.id,
+          stage: 'provider_requested',
+          customerId: user.uid,
+          providerId: driverId,
+          customerTitle: 'Request sent',
+          customerBody: 'A nearby provider has been invited. You will pay after acceptance.',
+          providerTitle: 'New battery boost request',
+          providerBody: '$vehicleLabel needs a boost at $_pickupAddress.',
         );
       }
     } catch (e) {
@@ -1401,13 +1731,13 @@ class _CustomerScreenState extends State<CustomerScreen> {
 
   Future<void> _searchNearbyBoosters() async {
     if (_pickupLatLng == null) {
-      _showErrorSnackBar('Set a pickup location first', Icons.place);
+      _showErrorSnackBar('Set a vehicle location first', Icons.place);
       return;
     }
 
     setState(() {
       _isSearchingBoosters = true;
-      if (_flowStep < 3) {
+      if (_serviceType != _serviceTypeBoost && _flowStep < 3) {
         _flowStep = 3;
       }
     });
@@ -1425,9 +1755,24 @@ class _CustomerScreenState extends State<CustomerScreen> {
         if (doc.id == currentUserId) continue;
 
         final data = doc.data();
+        final offered = (data['offeredServices'] as Map<String, dynamic>?) ?? <String, dynamic>{};
+        final supportsService = _serviceType == _serviceTypeBoost
+            ? (offered[_serviceTypeBoost] as bool?) ?? true
+            : (offered[_serviceType] as bool?) ?? false;
+        final acceptsNotifications =
+            (data['receiveServiceRequestNotifications'] as bool?) ?? true;
+        if (!supportsService || !acceptsNotifications) {
+          continue;
+        }
         final latitude = (data['latitude'] as num?)?.toDouble() ?? 0.0;
         final longitude = (data['longitude'] as num?)?.toDouble() ?? 0.0;
         final email = (data['email'] ?? 'Booster') as String;
+        final countryCode = countryCodeFromAddress(_pickupAddress);
+        final currency = providerCurrencyFromData(
+          data,
+          fallbackCountryCode: countryCode,
+        );
+        final serviceCents = servicePriceFromProviderData(data, _serviceType);
 
         if (latitude == 0.0 && longitude == 0.0) {
           continue;
@@ -1451,6 +1796,8 @@ class _CustomerScreenState extends State<CustomerScreen> {
             longitude: longitude,
             distanceKm: distanceKm,
             etaMinutes: etaMinutes,
+            serviceCents: serviceCents,
+            currency: currency,
           ),
         );
       }
@@ -1462,7 +1809,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
         _nearbyBoosters
           ..clear()
           ..addAll(boosters);
-        if (_flowStep < 3) {
+        if (_serviceType != _serviceTypeBoost && _flowStep < 3) {
           _flowStep = 3;
         }
       });
@@ -1523,6 +1870,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
         setState(() {
           _activeRequestId = null;
           _activeRequestStatus = null;
+          _activePaymentStatus = null;
           _activeDriverId = null;
           _activeServiceType = null;
         });
@@ -1543,6 +1891,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
       setState(() {
         _activeRequestId = doc.id;
         _activeRequestStatus = newStatus;
+        _activePaymentStatus = data['paymentStatus']?.toString();
         _activeDriverId = data['driverId']?.toString();
         _activeServiceType = data['serviceType']?.toString();
         _activeCreditedAmountCents = (data['creditedAmountCents'] as num?)?.toInt() ?? 0;
@@ -1596,30 +1945,77 @@ class _CustomerScreenState extends State<CustomerScreen> {
         _notifyProviderEta(_activeDriverId!);
       }
 
+      // Trigger review prompt when job completes
+      if (prevStatus != 'completed' && newStatus == 'completed') {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _promptReview(doc.id);
+        });
+      }
+    });
+  }
+
   // Show paywall after provider accepts
   Future<void> _showPaywallAfterAcceptance() async {
+    if (_isShowingPostAcceptancePaywall) return;
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
+    _isShowingPostAcceptancePaywall = true;
     final userDoc = await FirebaseFirestore.instance.collection('users').doc(user.uid).get();
-    if (!mounted) return;
+    if (!mounted) {
+      _isShowingPostAcceptancePaywall = false;
+      return;
+    }
     final data = userDoc.data() ?? <String, dynamic>{};
     final isFirstTimer = !(data['yearlySubscriptionPaid'] == true);
+    final requestId = _activeRequestId;
+    Map<String, dynamic> requestData = <String, dynamic>{};
+    if (requestId != null) {
+      final requestSnap =
+          await FirebaseFirestore.instance.collection('requests').doc(requestId).get();
+      requestData = requestSnap.data() ?? <String, dynamic>{};
+    }
+    if (!mounted) {
+      _isShowingPostAcceptancePaywall = false;
+      return;
+    }
 
     final proceed = await Navigator.of(context).push<bool>(
       MaterialPageRoute(
         builder: (_) => PaywallScreen(
           isFirstTimer: isFirstTimer,
           pickupAddress: _pickupAddress,
+          serviceCents: (requestData['serviceChargeCents'] as num?)?.toInt(),
+          taxCents: (requestData['taxCents'] as num?)?.toInt(),
+          totalCents: (requestData['totalChargeCents'] as num?)?.toInt(),
+          currency: (requestData['paymentCurrency'] ?? requestData['currency'])?.toString(),
+          paymentProvider: requestData['paymentProvider']?.toString(),
         ),
       ),
     );
+    _isShowingPostAcceptancePaywall = false;
     if (proceed == true && mounted && _activeRequestId != null) {
-      // Notify provider to proceed (e.g., update status to 'paid')
+      // Keep the accepted status so the provider can continue directly to en route.
       await FirebaseFirestore.instance.collection('requests').doc(_activeRequestId).update({
-        'status': 'paid',
+        'status': 'accepted',
+        'paymentStatus': 'paid',
+        'stage': 'payment_confirmed',
         'paidAt': FieldValue.serverTimestamp(),
       });
+      if (mounted) {
+        setState(() => _activePaymentStatus = 'paid');
+      }
       _showSuccessSnackBar('Payment confirmed. Provider is heading to your location.');
+      final providerId = _activeDriverId;
+      await _notifyStage(
+        requestId: _activeRequestId!,
+        stage: 'payment_confirmed',
+        customerId: user.uid,
+        providerId: providerId,
+        customerTitle: 'Payment confirmed',
+        customerBody: 'Your provider is cleared to head to your location.',
+        providerTitle: 'Customer payment confirmed',
+        providerBody: 'You can head to the customer now.',
+      );
     } else {
       // Optionally, cancel the request if payment not completed
       await FirebaseFirestore.instance.collection('requests').doc(_activeRequestId).update({
@@ -1629,15 +2025,6 @@ class _CustomerScreenState extends State<CustomerScreen> {
       });
       _showErrorSnackBar('Payment not completed. Request cancelled.', Icons.payment);
     }
-  }
-
-      // Trigger review prompt when job completes
-      if (prevStatus != 'completed' && newStatus == 'completed') {
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) _promptReview(doc.id);
-        });
-      }
-    });
   }
 
   Future<void> _notifyProviderEta(String driverId) async {
@@ -1708,8 +2095,22 @@ class _CustomerScreenState extends State<CustomerScreen> {
           .doc(_activeRequestId)
           .update({
         'status': 'completed',
+        'stage': 'completed',
         'completedAt': FieldValue.serverTimestamp(),
       });
+      final user = FirebaseAuth.instance.currentUser;
+      if (user != null) {
+        await _notifyStage(
+          requestId: _activeRequestId!,
+          stage: 'completed',
+          customerId: user.uid,
+          providerId: _activeDriverId,
+          customerTitle: 'Service completed',
+          customerBody: 'Your ${_serviceLabel(_activeServiceType ?? _serviceType)} is complete.',
+          providerTitle: 'Service completed',
+          providerBody: 'The customer marked this service complete.',
+        );
+      }
     } catch (e) {
       if (mounted) {
         _showErrorSnackBar('Could not mark complete. Try again.', Icons.error);
@@ -1761,8 +2162,8 @@ class _CustomerScreenState extends State<CustomerScreen> {
     try {
       await FirebaseFirestore.instance.collection('requests').doc(requestId).update({
         'driverId': targetProviderId,
-        'status': 'paid',
-        'paidAt': FieldValue.serverTimestamp(),
+        'status': 'pending',
+        'paymentStatus': 'awaiting_provider_acceptance',
         'resentAt': FieldValue.serverTimestamp(),
         'resendAttempts': _resendAttempts,
         'lastSearchCycleResult': 'resent',
@@ -1774,7 +2175,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
       if (!mounted) return;
       setState(() {
         _activeDriverId = targetProviderId;
-        _activeRequestStatus = 'paid';
+        _activeRequestStatus = 'pending';
         _isSearchingBoosters = true;
       });
       _showSuccessSnackBar('Request resent to a nearby provider.');
@@ -1832,6 +2233,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
         _flowStep = 1;
         _activeRequestId = null;
         _activeRequestStatus = null;
+        _activePaymentStatus = null;
         _activeDriverId = null;
         _activeServiceType = null;
         _providerEtaSummary = null;
@@ -1852,9 +2254,64 @@ class _CustomerScreenState extends State<CustomerScreen> {
     }
   }
 
+  bool get _isActiveContactUnlocked {
+    final status = _activeRequestStatus;
+    return _activePaymentStatus == 'paid' ||
+        status == 'paid' ||
+        status == 'en_route' ||
+        status == 'completed';
+  }
+
+  Future<void> _messageActiveProvider() async {
+    final requestId = _activeRequestId;
+    final providerId = _activeDriverId;
+    if (requestId == null || providerId == null || !_isActiveContactUnlocked) {
+      _showErrorSnackBar('Messaging unlocks after payment confirmation.', Icons.lock);
+      return;
+    }
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => ServiceChatScreen(
+          requestId: requestId,
+          peerUserId: providerId,
+          peerLabel: _providerDisplayName ?? 'Provider',
+        ),
+      ),
+    );
+  }
+
+  Future<void> _callActiveProvider() async {
+    final providerId = _activeDriverId;
+    if (providerId == null || !_isActiveContactUnlocked) {
+      _showErrorSnackBar('Calling unlocks after payment confirmation.', Icons.lock);
+      return;
+    }
+
+    try {
+      final userDoc =
+          await FirebaseFirestore.instance.collection('users').doc(providerId).get();
+      final data = userDoc.data() ?? <String, dynamic>{};
+      final phone = (data['phoneNumber'] ?? data['phone'] ?? '').toString().trim();
+      if (phone.isEmpty) {
+        _showErrorSnackBar('Provider phone number is not available.', Icons.phone_disabled);
+        return;
+      }
+      final launched = await launchUrl(
+        Uri(scheme: 'tel', path: phone),
+        mode: LaunchMode.externalApplication,
+      );
+      if (!launched && mounted) {
+        _showErrorSnackBar('Could not open phone dialer.', Icons.phone_disabled);
+      }
+    } catch (_) {
+      if (!mounted) return;
+      _showErrorSnackBar('Could not open phone dialer.', Icons.phone_disabled);
+    }
+  }
+
   Future<void> _promptReview(String requestId) async {
     if (!mounted) return;
-    await Navigator.of(context).push(
+    final reviewed = await Navigator.of(context).push<bool>(
       MaterialPageRoute(
         builder: (_) => ReviewScreen(
           requestId: requestId,
@@ -1863,12 +2320,16 @@ class _CustomerScreenState extends State<CustomerScreen> {
         ),
       ),
     );
+    if (reviewed == true) {
+      await AppReviewPrompt.requestAfterSuccessfulTransaction(requestId);
+    }
     if (!mounted) return;
     // Reset flow after review
     setState(() {
       _flowStep = 1;
       _activeRequestId = null;
       _activeRequestStatus = null;
+      _activePaymentStatus = null;
       _activeDriverId = null;
       _activeServiceType = null;
       _providerEtaSummary = null;
@@ -2078,11 +2539,9 @@ class _CustomerScreenState extends State<CustomerScreen> {
 
     // ── Step 3: Review & Pay ──────────────────────────────────────────────
     if (_flowStep == 3) {
-      final vehicleLabel = _selectedBoostVehicleType == _electricVehicleType
-          ? 'Electric Car Boost${_selectedBoostPlugType != null ? ' (${_selectedBoostPlugType})' : ''}'
-          : 'Regular Car Boost';
-      final priceDisplay =
-          '\$${(boostPaymentTotalCadCents / 100).toStringAsFixed(2)}';
+      final vehicleLabel = _boostVehicleLabel ?? 'Selected vehicle';
+      final boostLabel = _boostTypeLabel;
+      final nearestProvider = _nearbyBoosters.isEmpty ? null : _nearbyBoosters.first;
 
       return Container(
         color: const Color(0xFFF3F3F7),
@@ -2128,7 +2587,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Text(
-                                'Request Battery Boost',
+                                'Confirm Battery Boost',
                                 style: Theme.of(context)
                                     .textTheme
                                     .headlineSmall
@@ -2136,7 +2595,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
                               ),
                               const SizedBox(height: 4),
                               Text(
-                                'Review your request including location address before requesting.',
+                                'Review your car, vehicle location, and nearest provider before sending the order. Payment comes after a provider accepts.',
                                 style: Theme.of(context)
                                     .textTheme
                                     .bodyLarge
@@ -2191,8 +2650,8 @@ class _CustomerScreenState extends State<CustomerScreen> {
                                           style: Theme.of(context).textTheme.bodyLarge,
                                         ),
                                         const SizedBox(height: 2),
-                                        const Text(
-                                          'Tap to change plug type',
+                                        Text(
+                                          boostLabel,
                                           style: TextStyle(
                                             color: Color(0xFF2563EB),
                                             fontSize: 12,
@@ -2204,7 +2663,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
                                   ),
                                 )
                               : Text(
-                                  vehicleLabel,
+                                  '$vehicleLabel • $boostLabel',
                                   style: Theme.of(context).textTheme.bodyLarge,
                                 ),
                         ),
@@ -2237,7 +2696,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      'Ready to Request?',
+                      'Ready to Find Your Booster?',
                       style: Theme.of(context)
                           .textTheme
                           .headlineSmall
@@ -2245,7 +2704,9 @@ class _CustomerScreenState extends State<CustomerScreen> {
                     ),
                     const SizedBox(height: 8),
                     Text(
-                      'We will search for battery boost providers currently available near your saved location.',
+                      nearestProvider == null
+                          ? 'We will send your request to the nearest available battery boost provider. You only pay after they accept.'
+                          : '${nearestProvider.displayName} is ${nearestProvider.distanceKm.toStringAsFixed(1)} km away • ETA ${nearestProvider.etaMinutes} min • ${formatMoney(nearestProvider.serviceCents, currency: nearestProvider.currency)} before tax.',
                       style: Theme.of(context)
                           .textTheme
                           .bodyLarge
@@ -2276,7 +2737,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
                           : FittedBox(
                             fit: BoxFit.scaleDown,
                             child: Text(
-                              'Request & Pay $priceDisplay',
+                              'Send Request to Provider',
                               maxLines: 1,
                               style: const TextStyle(
                                 fontSize: 18, fontWeight: FontWeight.w700),
@@ -2373,7 +2834,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
                                     Text(
-                                      'Choose Your Battery Boost Type',
+                                      'Get a Battery Boost',
                                       style: Theme.of(context)
                                           .textTheme
                                           .headlineSmall
@@ -2381,7 +2842,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
                                     ),
                                     const SizedBox(height: 4),
                                     Text(
-                                      'Pick the exact kind of roadside help you need before we search.',
+                                      'Tell us your car, confirm vehicle location, preview nearby providers, then send the order before payment.',
                                       style: Theme.of(context)
                                           .textTheme
                                           .bodyLarge
@@ -2398,133 +2859,177 @@ class _CustomerScreenState extends State<CustomerScreen> {
                       ),
                     ),
                     const SizedBox(height: 18),
-                    Text(
-                      'Vehicle Type',
-                      style: Theme.of(context)
-                          .textTheme
-                          .headlineSmall
-                          ?.copyWith(fontWeight: FontWeight.w700),
-                    ),
-                    const SizedBox(height: 12),
-                    _isLoadingVehicleTypes
-                        ? const CircularProgressIndicator()
-                        : Row(children: [
-                            Expanded(
-                              child: DropdownButtonFormField<String>(
-                                value: _selectedVehicleMake,
-                                items: _vehicleMakes
-                                    .map((make) => DropdownMenuItem<String>(value: make, child: Text(make)))
-                                    .toList(),
-                                onChanged: (make) {
-                                  setState(() {
-                                    _selectedVehicleMake = make;
-                                    _selectedVehicleModel = null;
-                                  });
-                                },
-                                decoration: const InputDecoration(hintText: 'Make'),
+                    Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(18),
+                        border: Border.all(color: const Color(0xFFE1E2EA)),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              const Icon(Icons.directions_car_filled, color: Color(0xFF5500FF)),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: Text(
+                                  'Your Car',
+                                  style: Theme.of(context)
+                                      .textTheme
+                                      .titleLarge
+                                      ?.copyWith(fontWeight: FontWeight.w800),
+                                ),
                               ),
-                            ),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: DropdownButtonFormField<String>(
-                                value: _selectedVehicleModel,
-                                items: (_selectedVehicleMake != null
-                                        ? _vehicleModels[_selectedVehicleMake] ?? []
-                                        : [])
-                                    .map((model) => DropdownMenuItem<String>(value: model, child: Text(model)))
-                                    .toList(),
-                                onChanged: (model) {
-                                  setState(() {
-                                    _selectedVehicleModel = model;
-                                    _selectedBoostVehicleType = model;
-                                  });
-                                },
-                                decoration: const InputDecoration(hintText: 'Model'),
+                            ],
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            'Choose a make and model from the car database. If it is missing, add it manually and we will save it to the list.',
+                            style: Theme.of(context)
+                                .textTheme
+                                .bodyMedium
+                                ?.copyWith(color: const Color(0xFF6D7182)),
+                          ),
+                          const SizedBox(height: 14),
+                          _isLoadingVehicleTypes
+                              ? const Padding(
+                                  padding: EdgeInsets.only(bottom: 8),
+                                  child: LinearProgressIndicator(),
+                                )
+                              : const SizedBox.shrink(),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: _VehiclePickerButton(
+                                  label: 'Make',
+                                  value: _showBoostManualVehicle
+                                      ? null
+                                      : _selectedVehicleMake,
+                                  icon: Icons.badge_outlined,
+                                  onTap: _openBoostMakePicker,
+                                ),
                               ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: _VehiclePickerButton(
+                                  label: 'Model',
+                                  value: _showBoostManualVehicle
+                                      ? null
+                                      : _selectedVehicleModel,
+                                  icon: Icons.directions_car_outlined,
+                                  onTap: _openBoostModelPicker,
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+                          TextButton.icon(
+                            onPressed: () {
+                              setState(() {
+                                _showBoostManualVehicle = !_showBoostManualVehicle;
+                                if (_showBoostManualVehicle) {
+                                  _selectedVehicleMake = null;
+                                  _selectedVehicleModel = null;
+                                }
+                              });
+                            },
+                            icon: const Icon(Icons.edit_note),
+                            label: Text(
+                              _showBoostManualVehicle
+                                  ? 'Use car database dropdowns'
+                                  : 'Car not listed? Enter it manually',
                             ),
-                          ]),
-                    TextButton.icon(
-                      onPressed: () {
-                        setState(() {
-                          _showTowManualVehicle = !_showTowManualVehicle;
-                          if (_showTowManualVehicle) {
-                            _selectedBoostVehicleType = null;
-                          }
-                        });
-                      },
-                      icon: const Icon(Icons.edit_note),
-                      label: Text(
-                        _showTowManualVehicle
-                            ? 'Use dropdown instead'
-                            : 'Car not listed? Enter vehicle manually',
+                          ),
+                          if (_showBoostManualVehicle) ...[
+                            const SizedBox(height: 8),
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: TextField(
+                                    controller: _boostManualMakeController,
+                                    textCapitalization: TextCapitalization.words,
+                                    onChanged: (_) => setState(() {}),
+                                    decoration: const InputDecoration(
+                                      labelText: 'Make',
+                                      hintText: 'Ford',
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: TextField(
+                                    controller: _boostManualModelController,
+                                    textCapitalization: TextCapitalization.words,
+                                    onChanged: (_) => setState(() {}),
+                                    decoration: const InputDecoration(
+                                      labelText: 'Model',
+                                      hintText: 'F-150',
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 6),
+                            const Text(
+                              'Manual entries are saved automatically when you continue.',
+                              style: TextStyle(color: Color(0xFF64748B), fontSize: 12),
+                            ),
+                          ],
+                        ],
                       ),
                     ),
-                    if (_showTowManualVehicle) ...[
-                      const SizedBox(height: 8),
-                      TextField(
-                        controller: _towManualVehicleController,
-                        decoration: const InputDecoration(
-                          labelText: 'Enter vehicle manually',
-                          hintText: 'Example: 2020 Ford F-150',
-                        ),
-                        onSubmitted: (value) async {
-                          final parts = value.split(' ');
-                          if (parts.length >= 2) {
-                            final make = parts[1];
-                            final model = parts.sublist(2).join(' ');
-                            await _addManualVehicleType(make, model);
-                            setState(() {
-                              _selectedVehicleMake = make;
-                              _selectedVehicleModel = model;
-                              _selectedBoostVehicleType = model;
-                            });
-                          }
-                        },
+                    const SizedBox(height: 14),
+                    Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(18),
+                        border: Border.all(color: const Color(0xFFE1E2EA)),
                       ),
-                    ],
-                    if (_selectedBoostVehicleType == _electricVehicleType) ...[
-                      const SizedBox(height: 16),
-                      Text(
-                        'EV Plug Type',
-                        style: Theme.of(context)
-                            .textTheme
-                            .titleLarge
-                            ?.copyWith(fontWeight: FontWeight.w700),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Boost Service Type',
+                            style: Theme.of(context)
+                                .textTheme
+                                .titleLarge
+                                ?.copyWith(fontWeight: FontWeight.w800),
+                          ),
+                          const SizedBox(height: 10),
+                          _VehicleTypeSelector(
+                            selectedVehicleType: _selectedBoostVehicleType ?? '',
+                            selectedPlugType: _selectedBoostPlugType,
+                            onVehicleTypeChanged: (vehicleType) {
+                              setState(() {
+                                _selectedBoostVehicleType = vehicleType;
+                                if (vehicleType == _electricVehicleType) {
+                                  _selectedBoostPlugType ??= _plugTypes.first;
+                                } else {
+                                  _selectedBoostPlugType = null;
+                                }
+                              });
+                            },
+                            onPlugTypeChanged: (plugType) {
+                              setState(() => _selectedBoostPlugType = plugType);
+                            },
+                          ),
+                          const SizedBox(height: 12),
+                          TextField(
+                            controller: _boostProviderNoteController,
+                            maxLines: 3,
+                            maxLength: 240,
+                            decoration: const InputDecoration(
+                              labelText: 'Note to Provider (Optional)',
+                              hintText: 'Example: Car is in basement level P2 near elevator B',
+                              prefixIcon: Icon(Icons.edit_note),
+                            ),
+                          ),
+                        ],
                       ),
-                      const SizedBox(height: 10),
-                      GridView.builder(
-                        shrinkWrap: true,
-                        physics: const NeverScrollableScrollPhysics(),
-                        itemCount: _plugTypes.length,
-                        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                          crossAxisCount: 2,
-                          mainAxisSpacing: 10,
-                          crossAxisSpacing: 10,
-                          childAspectRatio: 0.74,
-                        ),
-                        itemBuilder: (context, index) {
-                          final plugType = _plugTypes[index];
-                          return _PlugTypeCard(
-                            plugType: plugType,
-                            selected: _selectedBoostPlugType == plugType,
-                            onTap: () => setState(() {
-                              _selectedBoostPlugType = plugType;
-                            }),
-                          );
-                        },
-                      ),
-                      const SizedBox(height: 12),
-                      TextField(
-                        controller: _boostProviderNoteController,
-                        maxLines: 3,
-                        maxLength: 240,
-                        decoration: const InputDecoration(
-                          labelText: 'Note to Provider (Optional)',
-                          hintText: 'Example: Car is in basement level P2 near elevator B',
-                          prefixIcon: Icon(Icons.edit_note),
-                        ),
-                      ),
-                    ],
+                    ),
                     if (_pickupAddress != null) ...[
                       const SizedBox(height: 18),
                       Container(
@@ -2538,7 +3043,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              'Pickup Location Confirmed',
+                              'Vehicle Location Confirmed',
                               style: Theme.of(context)
                                   .textTheme
                                   .titleMedium
@@ -2581,7 +3086,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
                                             child: CircularProgressIndicator(strokeWidth: 2),
                                           )
                                         : const Icon(Icons.search),
-                                    label: const Text('Search Providers'),
+                                    label: const Text('Refresh Providers'),
                                   ),
                                 ),
                               ],
@@ -2601,7 +3106,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
                     const SizedBox(height: 8),
                     if (_pickupAddress == null)
                       Text(
-                        'Choose boost type and continue to set location first.',
+                        'Choose boost type and continue to set vehicle location first.',
                         style: Theme.of(context)
                             .textTheme
                             .bodyLarge
@@ -2648,7 +3153,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
                                       ),
                                       const SizedBox(height: 2),
                                       Text(
-                                        '${booster.distanceKm.toStringAsFixed(1)} km • ETA ${booster.etaMinutes} min',
+                                        '${booster.distanceKm.toStringAsFixed(1)} km • ETA ${booster.etaMinutes} min • ${formatMoney(booster.serviceCents, currency: booster.currency)}',
                                         style: Theme.of(context)
                                             .textTheme
                                             .bodyMedium
@@ -2661,7 +3166,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
                                   onPressed: _isWaitingForBooster
                                       ? null
                                       : () => _requestBoost(booster.userId),
-                                  child: const Text('Request Now'),
+                                  child: const Text('Request'),
                                 ),
                               ],
                             ),
@@ -2706,8 +3211,13 @@ class _CustomerScreenState extends State<CustomerScreen> {
                       child: SizedBox(
                         width: double.infinity,
                         child: ElevatedButton(
-                          onPressed:
-                              _isBoostSelectionValid ? _continueBoostFlow : null,
+                          onPressed: !_isBoostSelectionValid ||
+                                  _isSearchingBoosters ||
+                                  _isWaitingForBooster
+                              ? null
+                              : (_pickupAddress == null
+                                  ? _continueBoostFlow
+                                  : _confirmBoostAndRequest),
                           style: ElevatedButton.styleFrom(
                             backgroundColor: const Color(0xFF5500FF),
                             foregroundColor: Colors.white,
@@ -2716,8 +3226,10 @@ class _CustomerScreenState extends State<CustomerScreen> {
                             ),
                             padding: const EdgeInsets.symmetric(vertical: 18),
                           ),
-                          child: const Text(
-                            'Continue',
+                          child: Text(
+                            _pickupAddress == null
+                                ? 'Set Vehicle Location'
+                                : 'Send Request to Nearest Provider',
                             style: TextStyle(
                               fontSize: 18,
                               fontWeight: FontWeight.w700,
@@ -3367,6 +3879,32 @@ class _CustomerScreenState extends State<CustomerScreen> {
                             ],
                           ),
                         ],
+                        if (_isActiveContactUnlocked && _activeDriverId != null) ...[
+                          const SizedBox(height: 16),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: OutlinedButton.icon(
+                                  onPressed: _messageActiveProvider,
+                                  icon: const Icon(Icons.chat_bubble_outline),
+                                  label: const Text('Message'),
+                                ),
+                              ),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: ElevatedButton.icon(
+                                  onPressed: _callActiveProvider,
+                                  icon: const Icon(Icons.phone),
+                                  label: const Text('Call'),
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: const Color(0xFF16A34A),
+                                    foregroundColor: Colors.white,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
                       ],
                     ),
                   ),
@@ -3477,6 +4015,8 @@ class _CustomerScreenState extends State<CustomerScreen> {
       case 'en_route':
         return const Color(0xFF0EA5E9);
       case 'paid':
+        return const Color(0xFFF59E0B);
+      case 'pending':
         return const Color(0xFFF59E0B);
       case 'completed':
         return const Color(0xFF16A34A);
@@ -3641,7 +4181,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
                               _towStep == 1
                                 ? stepOneTitle
                                 : _towStep == 2
-                                  ? 'Set Your Location'
+                                  ? 'Set Vehicle Location'
                                   : _towStep == 3
                                     ? stepThreeTitle
                                     : submittedTitle,
@@ -3689,42 +4229,32 @@ class _CustomerScreenState extends State<CustomerScreen> {
               ),
               const SizedBox(height: 12),
               _isLoadingVehicleTypes
-                  ? const CircularProgressIndicator()
-                  : Row(children: [
-                      Expanded(
-                        child: DropdownButtonFormField<String>(
-                          value: _selectedVehicleMake,
-                          items: _vehicleMakes
-                              .map((make) => DropdownMenuItem<String>(value: make, child: Text(make)))
-                              .toList(),
-                          onChanged: (make) {
-                            setState(() {
-                              _selectedVehicleMake = make;
-                              _selectedVehicleModel = null;
-                            });
-                          },
-                          decoration: const InputDecoration(hintText: 'Make'),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: DropdownButtonFormField<String>(
-                          value: _selectedVehicleModel,
-                          items: (_selectedVehicleMake != null
-                                  ? _vehicleModels[_selectedVehicleMake] ?? []
-                                  : [])
-                              .map((model) => DropdownMenuItem<String>(value: model, child: Text(model)))
-                              .toList(),
-                          onChanged: (model) {
-                            setState(() {
-                              _selectedVehicleModel = model;
-                              _selectedTowVehicle = model;
-                            });
-                          },
-                          decoration: const InputDecoration(hintText: 'Model'),
-                        ),
-                      ),
-                    ]),
+                  ? const Padding(
+                      padding: EdgeInsets.only(bottom: 8),
+                      child: LinearProgressIndicator(),
+                    )
+                  : const SizedBox.shrink(),
+              Row(
+                children: [
+                  Expanded(
+                    child: _VehiclePickerButton(
+                      label: 'Make',
+                      value: _showTowManualVehicle ? null : _selectedVehicleMake,
+                      icon: Icons.badge_outlined,
+                      onTap: _openTowMakePicker,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: _VehiclePickerButton(
+                      label: 'Model',
+                      value: _showTowManualVehicle ? null : _selectedVehicleModel,
+                      icon: Icons.directions_car_outlined,
+                      onTap: _openTowModelPicker,
+                    ),
+                  ),
+                ],
+              ),
               const SizedBox(height: 10),
               TextButton.icon(
                 onPressed: () {
@@ -3879,7 +4409,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
                               children: [
                                 Icon(Icons.my_location, color: Color(0xFF2BC8E8)),
                                 SizedBox(width: 8),
-                                Text('Detected Location', style: TextStyle(fontWeight: FontWeight.w700)),
+                                Text('Detected Vehicle Location', style: TextStyle(fontWeight: FontWeight.w700)),
                               ],
                             ),
                             const SizedBox(height: 8),
@@ -3932,7 +4462,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
                           ),
                           child: Text(
                             _towLocationTabIndex == 0
-                                ? 'Use Current Location'
+                                ? 'Use Current Vehicle Location'
                                 : 'Save Address',
                             style: const TextStyle(
                               fontSize: 18,
@@ -4084,7 +4614,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
                       ? (isMechanic
                         ? 'No nearby mobile mechanics found yet. Update location and try again.'
                         : 'No nearby tow providers found yet. Update location and try again.')
-                      : '${_nearbyBoosters.length} nearby ${isMechanic ? 'mobile mechanics' : 'tow providers'} found. Nearest ETA ${_nearbyBoosters.first.etaMinutes} min.',
+                      : '${_nearbyBoosters.length} nearby ${isMechanic ? 'mobile mechanics' : 'tow providers'} found. Nearest ETA ${_nearbyBoosters.first.etaMinutes} min • ${formatMoney(_nearbyBoosters.first.serviceCents, currency: _nearbyBoosters.first.currency)} before tax.',
                     style: Theme.of(context)
                         .textTheme
                         .bodyLarge
@@ -4161,7 +4691,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
           infoWindow: InfoWindow(
             title: booster.displayName,
             snippet:
-                '${booster.distanceKm.toStringAsFixed(2)} km • ETA ${booster.etaMinutes} min',
+                '${booster.distanceKm.toStringAsFixed(2)} km • ETA ${booster.etaMinutes} min • ${formatMoney(booster.serviceCents, currency: booster.currency)}',
           ),
           icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueGreen),
         ),
@@ -4289,12 +4819,14 @@ class _TowPricing {
     required this.taxCents,
     required this.subscriptionCents,
     required this.totalCents,
+    this.currency = defaultPricingCurrency,
   });
 
   final int serviceCents;
   final int taxCents;
   final int subscriptionCents;
   final int totalCents;
+  final String currency;
 }
 
 class _TowPaymentConfirmScreen extends StatelessWidget {
@@ -4303,7 +4835,7 @@ class _TowPaymentConfirmScreen extends StatelessWidget {
   final _TowPricing pricing;
   final String serviceLabel;
 
-  String _toCad(int cents) => (cents / 100).toStringAsFixed(2);
+  String _toMoney(int cents) => formatMoney(cents, currency: pricing.currency);
 
   @override
   Widget build(BuildContext context) {
@@ -4355,17 +4887,17 @@ class _TowPaymentConfirmScreen extends StatelessWidget {
               ),
               child: Column(
                 children: [
-                  _PaymentLine(label: serviceLabel, value: '\$${_toCad(pricing.serviceCents)}'),
+                  _PaymentLine(label: serviceLabel, value: _toMoney(pricing.serviceCents)),
                   if (pricing.subscriptionCents > 0)
                     _PaymentLine(
                       label: 'Yearly subscription (first-time user)',
-                      value: '\$${_toCad(pricing.subscriptionCents)}',
+                      value: _toMoney(pricing.subscriptionCents),
                     ),
-                  _PaymentLine(label: 'Tax', value: '\$${_toCad(pricing.taxCents)}'),
+                  _PaymentLine(label: 'Tax', value: _toMoney(pricing.taxCents)),
                   const Divider(height: 24),
                   _PaymentLine(
                     label: 'Service Total',
-                    value: '\$${_toCad(pricing.totalCents)}',
+                    value: _toMoney(pricing.totalCents),
                     bold: true,
                   ),
                 ],
@@ -4686,6 +5218,8 @@ class _NearbyBooster {
     required this.longitude,
     required this.distanceKm,
     required this.etaMinutes,
+    required this.serviceCents,
+    required this.currency,
   });
 
   final String userId;
@@ -4694,6 +5228,8 @@ class _NearbyBooster {
   final double longitude;
   final double distanceKm;
   final int etaMinutes;
+  final int serviceCents;
+  final String currency;
 }
 
 // ── Pulse ring animation for searching state ───────────────────────────────
@@ -4804,14 +5340,15 @@ class _RequestStatusFlow extends StatelessWidget {
   final String serviceType;
 
   static const List<String> _orderedStatuses = <String>[
-    'paid',
+    'pending',
     'accepted',
+    'paid',
     'en_route',
     'completed',
   ];
 
   int _currentIndex() {
-    if (currentStatus == 'pending' || currentStatus == 'awaiting_payment') {
+    if (currentStatus == 'awaiting_payment') {
       return 0;
     }
     final idx = _orderedStatuses.indexOf(currentStatus);
@@ -4822,6 +5359,8 @@ class _RequestStatusFlow extends StatelessWidget {
     final isTow = serviceType == _serviceTypeTow;
     final isMechanic = serviceType == _serviceTypeMechanic;
     switch (status) {
+      case 'pending':
+        return 'Request Sent';
       case 'paid':
         return 'Payment Confirmed';
       case 'accepted':
@@ -5306,7 +5845,7 @@ class _PickupSelectorSheetState extends State<_PickupSelectorSheet> {
             const TabBar(
               tabs: [
                 Tab(text: 'Enter Address'),
-                Tab(text: 'Use Current Location'),
+                Tab(text: 'Use Current Vehicle Location'),
               ],
             ),
             const SizedBox(height: 12),
@@ -5360,7 +5899,7 @@ class _PickupSelectorSheetState extends State<_PickupSelectorSheet> {
                                 _isLoadingCurrentLocationPreview
                                     ? 'Detecting your current address...'
                                     : (_currentLocationPreviewAddress ??
-                                        'Use your current GPS location as pickup address.'),
+                                        'Use your current GPS location as the vehicle location.'),
                                 style: Theme.of(context)
                                     .textTheme
                                     .bodyMedium
@@ -5409,6 +5948,40 @@ const double _canadianTaxRate = 0.13;
 
 const String _regularVehicleType = 'regular';
 const String _electricVehicleType = 'electric';
+const Map<String, List<String>> _defaultVehicleDatabase = <String, List<String>>{
+  'Acura': <String>['ILX', 'Integra', 'MDX', 'RDX', 'TLX'],
+  'Audi': <String>['A3', 'A4', 'A6', 'Q5', 'Q7'],
+  'BMW': <String>['3 Series', '5 Series', 'X3', 'X5', 'i4'],
+  'Chevrolet': <String>['Cruze', 'Equinox', 'Malibu', 'Silverado', 'Tahoe'],
+  'Dodge': <String>['Challenger', 'Charger', 'Durango', 'Grand Caravan', 'Journey'],
+  'Ford': <String>['Escape', 'Explorer', 'F-150', 'Focus', 'Mustang'],
+  'GMC': <String>['Acadia', 'Sierra', 'Terrain', 'Yukon'],
+  'Honda': <String>['Accord', 'Civic', 'CR-V', 'HR-V', 'Pilot'],
+  'Hyundai': <String>['Elantra', 'Kona', 'Santa Fe', 'Sonata', 'Tucson'],
+  'Jeep': <String>['Cherokee', 'Compass', 'Grand Cherokee', 'Wrangler'],
+  'Kia': <String>['Forte', 'Optima', 'Seltos', 'Sorento', 'Sportage'],
+  'Lexus': <String>['ES', 'IS', 'NX', 'RX', 'UX'],
+  'Mazda': <String>['CX-3', 'CX-5', 'CX-9', 'Mazda3', 'Mazda6'],
+  'Mercedes-Benz': <String>['A-Class', 'C-Class', 'E-Class', 'GLA', 'GLC'],
+  'Nissan': <String>['Altima', 'Murano', 'Pathfinder', 'Rogue', 'Sentra'],
+  'Ram': <String>['1500', '2500', '3500', 'ProMaster'],
+  'Subaru': <String>['Crosstrek', 'Forester', 'Impreza', 'Outback'],
+  'Tesla': <String>['Model 3', 'Model S', 'Model X', 'Model Y'],
+  'Toyota': <String>['Camry', 'Corolla', 'Highlander', 'RAV4', 'Tacoma'],
+  'Volkswagen': <String>['Atlas', 'Golf', 'Jetta', 'Passat', 'Tiguan'],
+};
+
+List<String> _defaultVehicleMakes() {
+  return _defaultVehicleDatabase.keys.toList()..sort();
+}
+
+Map<String, List<String>> _defaultVehicleModels() {
+  return <String, List<String>>{
+    for (final entry in _defaultVehicleDatabase.entries)
+      entry.key: List<String>.from(entry.value)..sort(),
+  };
+}
+
 const List<String> _towVehicleOptions = <String>[
   'Car Tow',
   'SUV Tow',
@@ -5504,6 +6077,75 @@ class _VehicleTypeSelector extends StatelessWidget {
           ),
         ],
       ],
+    );
+  }
+}
+
+class _VehiclePickerButton extends StatelessWidget {
+  const _VehiclePickerButton({
+    required this.label,
+    required this.value,
+    required this.icon,
+    required this.onTap,
+  });
+
+  final String label;
+  final String? value;
+  final IconData icon;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(14),
+      child: Container(
+        constraints: const BoxConstraints(minHeight: 68),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        decoration: BoxDecoration(
+          color: const Color(0xFFF3F4F6),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+            color: value == null ? Colors.transparent : const Color(0xFFBFD7FF),
+          ),
+        ),
+        child: Row(
+          children: [
+            Icon(icon, color: const Color(0xFF64748B), size: 22),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    label,
+                    style: const TextStyle(
+                      color: Color(0xFF64748B),
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    value ?? 'Select',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: value == null
+                          ? const Color(0xFF8A8A9A)
+                          : const Color(0xFF0F172A),
+                      fontSize: 16,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const Icon(Icons.keyboard_arrow_down, color: Color(0xFF94A3B8)),
+          ],
+        ),
+      ),
     );
   }
 }

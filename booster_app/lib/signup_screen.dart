@@ -5,6 +5,7 @@ import 'booster_logo.dart';
 import 'auth_routing.dart';
 import 'home_screen.dart';
 import 'terms_policy_screen.dart';
+import 'service_commerce.dart';
 
 class SignupScreen extends StatefulWidget {
   const SignupScreen({super.key});
@@ -117,7 +118,19 @@ class _SignupScreenState extends State<SignupScreen> {
         'isAvailable': false,
         'latitude': 0.0,
         'longitude': 0.0,
+        'phoneNumber': '',
         'isSubscribed': false,
+        'receiveServiceRequestNotifications': true,
+        'offeredServices': <String, bool>{
+          serviceTypeBoost: true,
+          serviceTypeTow: false,
+          serviceTypeMechanic: false,
+        },
+        'providerPricingCurrency': defaultPricingCurrency,
+        'providerPricingCents': defaultServicePriceCents,
+        'preferredPaymentProvider': defaultPaymentProvider,
+        'supportedPaymentProviders': supportedPaymentProviders,
+        'platformAdminRate': defaultAdminRate,
         'agreementAccepted': true,
         'privacyPolicyAccepted': true,
         'agreementVersion': kBoosterAgreementVersion,
