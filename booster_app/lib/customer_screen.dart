@@ -713,43 +713,6 @@ class _CustomerScreenState extends State<CustomerScreen> {
     });
   }
 
-  Future<bool> _ensureSubscribed() async {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) {
-      return false;
-    }
-
-    final userDoc = await FirebaseFirestore.instance
-        .collection('users')
-        .doc(user.uid)
-        .get();
-
-    if (!mounted) return false;
-
-    if (!userDoc.exists) {
-      _showErrorSnackBar('User profile not found', Icons.person_off);
-      return false;
-    }
-
-    final data = userDoc.data() ?? <String, dynamic>{};
-    final bool isSubscribed = data['yearlySubscriptionPaid'] == true || data['isSubscribed'] == true;
-    if (isSubscribed) {
-      return true;
-    }
-
-    final result = await Navigator.push<bool>(
-      context,
-      MaterialPageRoute(
-        builder: (context) => PaywallScreen(
-          isFirstTimer: true,
-          pickupAddress: _pickupAddress,
-        ),
-      ),
-    );
-
-    return result == true;
-  }
-
   Future<void> _openPickupSelector({
     required String vehicleType,
     String? plugType,
