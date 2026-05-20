@@ -118,6 +118,7 @@ class _SignupScreenState extends State<SignupScreen> {
         'isAvailable': false,
         'latitude': 0.0,
         'longitude': 0.0,
+        'phoneNumber': '',
         'isSubscribed': false,
         'receiveServiceRequestNotifications': true,
         'offeredServices': <String, bool>{

@@ -7,10 +7,13 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:geocoding/geocoding.dart';
 import 'package:flutter/services.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'app_review_prompt.dart';
 import 'login_screen.dart';
 import 'paywall_screen.dart';
 import 'review_screen.dart';
 import 'service_commerce.dart';
+import 'service_chat_screen.dart';
 import 'stripe_payment_service.dart';
 import 'transaction_tracking_screen.dart';
 
@@ -134,6 +137,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _requestWatchSub;
   String? _activeRequestId;
   String? _activeRequestStatus;
+  String? _activePaymentStatus;
   String? _activeDriverId;
   String? _activeServiceType;
   String? _providerEtaSummary;
@@ -1743,6 +1747,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
         setState(() {
           _activeRequestId = null;
           _activeRequestStatus = null;
+          _activePaymentStatus = null;
           _activeDriverId = null;
           _activeServiceType = null;
         });
@@ -1763,6 +1768,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
       setState(() {
         _activeRequestId = doc.id;
         _activeRequestStatus = newStatus;
+        _activePaymentStatus = data['paymentStatus']?.toString();
         _activeDriverId = data['driverId']?.toString();
         _activeServiceType = data['serviceType']?.toString();
         _activeCreditedAmountCents = (data['creditedAmountCents'] as num?)?.toInt() ?? 0;
@@ -1872,6 +1878,9 @@ class _CustomerScreenState extends State<CustomerScreen> {
         'stage': 'payment_confirmed',
         'paidAt': FieldValue.serverTimestamp(),
       });
+      if (mounted) {
+        setState(() => _activePaymentStatus = 'paid');
+      }
       _showSuccessSnackBar('Payment confirmed. Provider is heading to your location.');
       final providerId = _activeDriverId;
       await _notifyStage(
@@ -2101,6 +2110,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
         _flowStep = 1;
         _activeRequestId = null;
         _activeRequestStatus = null;
+        _activePaymentStatus = null;
         _activeDriverId = null;
         _activeServiceType = null;
         _providerEtaSummary = null;
@@ -2121,9 +2131,64 @@ class _CustomerScreenState extends State<CustomerScreen> {
     }
   }
 
+  bool get _isActiveContactUnlocked {
+    final status = _activeRequestStatus;
+    return _activePaymentStatus == 'paid' ||
+        status == 'paid' ||
+        status == 'en_route' ||
+        status == 'completed';
+  }
+
+  Future<void> _messageActiveProvider() async {
+    final requestId = _activeRequestId;
+    final providerId = _activeDriverId;
+    if (requestId == null || providerId == null || !_isActiveContactUnlocked) {
+      _showErrorSnackBar('Messaging unlocks after payment confirmation.', Icons.lock);
+      return;
+    }
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => ServiceChatScreen(
+          requestId: requestId,
+          peerUserId: providerId,
+          peerLabel: _providerDisplayName ?? 'Provider',
+        ),
+      ),
+    );
+  }
+
+  Future<void> _callActiveProvider() async {
+    final providerId = _activeDriverId;
+    if (providerId == null || !_isActiveContactUnlocked) {
+      _showErrorSnackBar('Calling unlocks after payment confirmation.', Icons.lock);
+      return;
+    }
+
+    try {
+      final userDoc =
+          await FirebaseFirestore.instance.collection('users').doc(providerId).get();
+      final data = userDoc.data() ?? <String, dynamic>{};
+      final phone = (data['phoneNumber'] ?? data['phone'] ?? '').toString().trim();
+      if (phone.isEmpty) {
+        _showErrorSnackBar('Provider phone number is not available.', Icons.phone_disabled);
+        return;
+      }
+      final launched = await launchUrl(
+        Uri(scheme: 'tel', path: phone),
+        mode: LaunchMode.externalApplication,
+      );
+      if (!launched && mounted) {
+        _showErrorSnackBar('Could not open phone dialer.', Icons.phone_disabled);
+      }
+    } catch (_) {
+      if (!mounted) return;
+      _showErrorSnackBar('Could not open phone dialer.', Icons.phone_disabled);
+    }
+  }
+
   Future<void> _promptReview(String requestId) async {
     if (!mounted) return;
-    await Navigator.of(context).push(
+    final reviewed = await Navigator.of(context).push<bool>(
       MaterialPageRoute(
         builder: (_) => ReviewScreen(
           requestId: requestId,
@@ -2132,12 +2197,16 @@ class _CustomerScreenState extends State<CustomerScreen> {
         ),
       ),
     );
+    if (reviewed == true) {
+      await AppReviewPrompt.requestAfterSuccessfulTransaction(requestId);
+    }
     if (!mounted) return;
     // Reset flow after review
     setState(() {
       _flowStep = 1;
       _activeRequestId = null;
       _activeRequestStatus = null;
+      _activePaymentStatus = null;
       _activeDriverId = null;
       _activeServiceType = null;
       _providerEtaSummary = null;
@@ -3709,6 +3778,32 @@ class _CustomerScreenState extends State<CustomerScreen> {
                                 label: 'ETA',
                                 value: '${_providerEtaMinutes ?? '–'} min',
                               )),
+                            ],
+                          ),
+                        ],
+                        if (_isActiveContactUnlocked && _activeDriverId != null) ...[
+                          const SizedBox(height: 16),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: OutlinedButton.icon(
+                                  onPressed: _messageActiveProvider,
+                                  icon: const Icon(Icons.chat_bubble_outline),
+                                  label: const Text('Message'),
+                                ),
+                              ),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: ElevatedButton.icon(
+                                  onPressed: _callActiveProvider,
+                                  icon: const Icon(Icons.phone),
+                                  label: const Text('Call'),
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: const Color(0xFF16A34A),
+                                    foregroundColor: Colors.white,
+                                  ),
+                                ),
+                              ),
                             ],
                           ),
                         ],

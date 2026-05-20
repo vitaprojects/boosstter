@@ -24,6 +24,7 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
   String _pricingCurrency = defaultPricingCurrency;
   String _preferredPaymentProvider = defaultPaymentProvider;
 
+  final TextEditingController _phoneController = TextEditingController();
   final TextEditingController _boostPriceController = TextEditingController();
   final TextEditingController _towPriceController = TextEditingController();
   final TextEditingController _mechanicPriceController = TextEditingController();
@@ -36,6 +37,7 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
 
   @override
   void dispose() {
+    _phoneController.dispose();
     _boostPriceController.dispose();
     _towPriceController.dispose();
     _mechanicPriceController.dispose();
@@ -72,6 +74,7 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
         _pricingCurrency = detectedCurrency;
         _preferredPaymentProvider =
             (data['preferredPaymentProvider'] as String?) ?? defaultPaymentProvider;
+        _phoneController.text = (data['phoneNumber'] ?? data['phone'] ?? '').toString();
 
         _boostPriceController.text =
             (((pricing[serviceTypeBoost] as num?)?.toInt() ??
@@ -165,6 +168,7 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
           serviceTypeMechanic: mechanicCents,
         },
         'preferredPaymentProvider': _preferredPaymentProvider,
+        'phoneNumber': _phoneController.text.trim(),
         'supportedPaymentProviders': supportedPaymentProviders,
         'platformAdminRate': defaultAdminRate,
         'updatedAt': FieldValue.serverTimestamp(),
@@ -278,6 +282,16 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
                     style: TextStyle(color: Color(0xFF64748B), height: 1.35),
                   ),
                   const SizedBox(height: 16),
+                  TextField(
+                    controller: _phoneController,
+                    keyboardType: TextInputType.phone,
+                    decoration: const InputDecoration(
+                      labelText: 'Phone number for paid orders',
+                      prefixIcon: Icon(Icons.phone_outlined),
+                      helperText: 'Only shared after payment confirmation.',
+                    ),
+                  ),
+                  const SizedBox(height: 12),
                   Container(
                     padding: const EdgeInsets.all(16),
                     decoration: BoxDecoration(

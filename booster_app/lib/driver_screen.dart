@@ -4,9 +4,13 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:flutter/services.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'app_review_prompt.dart';
 import 'login_screen.dart';
 import 'customer_screen.dart';
+import 'review_screen.dart';
 import 'service_commerce.dart';
+import 'service_chat_screen.dart';
 
 class DriverScreen extends StatefulWidget {
   const DriverScreen({super.key});
@@ -24,7 +28,9 @@ class _DriverScreenState extends State<DriverScreen> {
   // Active job state
   String? _activeRequestId;
   String? _activeRequestStatus; // pending | accepted | en_route | completed
+  String? _activePaymentStatus;
   String? _activeServiceType;
+  String? _activeCustomerId;
   String? _activePickupAddress;
   double? _activePickupLat;
   double? _activePickupLng;
@@ -37,6 +43,7 @@ class _DriverScreenState extends State<DriverScreen> {
   StreamSubscription<QuerySnapshot>? _activeJobSub;
   StreamSubscription<QuerySnapshot>? _cancelledJobSub;
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _incomingAlertSub;
+  String? _lastProviderReviewPromptedRequestId;
 
   bool _providesBoost = true;
   bool _providesTow = false;
@@ -163,7 +170,7 @@ class _DriverScreenState extends State<DriverScreen> {
     _activeJobSub = FirebaseFirestore.instance
         .collection('requests')
         .where('driverId', isEqualTo: user.uid)
-      .where('status', whereIn: ['pending', 'paid', 'accepted', 'en_route'])
+      .where('status', whereIn: ['pending', 'paid', 'accepted', 'en_route', 'completed'])
         .orderBy('timestamp', descending: true)
         .limit(1)
         .snapshots()
@@ -173,7 +180,9 @@ class _DriverScreenState extends State<DriverScreen> {
             setState(() {
               _activeRequestId = null;
               _activeRequestStatus = null;
+              _activePaymentStatus = null;
               _activeServiceType = null;
+              _activeCustomerId = null;
               _activePickupAddress = null;
               _activePickupLat = null;
               _activePickupLng = null;
@@ -190,7 +199,9 @@ class _DriverScreenState extends State<DriverScreen> {
             setState(() {
               _activeRequestId = doc.id;
               _activeRequestStatus = data['status'];
+              _activePaymentStatus = data['paymentStatus']?.toString();
               _activeServiceType = data['serviceType']?.toString();
+              _activeCustomerId = data['customerId']?.toString();
               _activePickupAddress = data['pickupAddress'];
               _activePickupLat = (data['pickupLatitude'] as num?)?.toDouble();
               _activePickupLng = (data['pickupLongitude'] as num?)?.toDouble();
@@ -201,6 +212,14 @@ class _DriverScreenState extends State<DriverScreen> {
               _activePlugType = data['plugType']?.toString();
               _activeTowReason = data['towReason']?.toString();
             });
+            if (data['status'] == 'completed' &&
+                data['providerReviewSubmitted'] != true &&
+                _lastProviderReviewPromptedRequestId != doc.id) {
+              _lastProviderReviewPromptedRequestId = doc.id;
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (mounted) _promptProviderReview(doc.id);
+              });
+            }
           }
         });
   }
@@ -363,9 +382,10 @@ class _DriverScreenState extends State<DriverScreen> {
 
   Future<void> _updateJobStatus(String status) async {
     if (_activeRequestId == null) return;
+    final requestId = _activeRequestId!;
     try {
       final requestRef =
-          FirebaseFirestore.instance.collection('requests').doc(_activeRequestId);
+          FirebaseFirestore.instance.collection('requests').doc(requestId);
       final requestSnap = await requestRef.get();
       final data = requestSnap.data() ?? <String, dynamic>{};
       final customerId = data['customerId']?.toString();
@@ -380,7 +400,7 @@ class _DriverScreenState extends State<DriverScreen> {
       });
       if (customerId != null) {
         await writeStageNotification(
-          requestId: _activeRequestId!,
+          requestId: requestId,
           recipientId: customerId,
           audience: 'customer',
           stage: status,
@@ -390,11 +410,96 @@ class _DriverScreenState extends State<DriverScreen> {
               : 'Your provider is heading to your location.',
         );
       }
+      if (status == 'completed' && mounted) {
+        _lastProviderReviewPromptedRequestId = requestId;
+        await _promptProviderReview(requestId);
+      }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context)
             .showSnackBar(SnackBar(content: Text('Update failed: $e')));
       }
+    }
+  }
+
+  bool get _isActiveContactUnlocked {
+    final status = _activeRequestStatus;
+    return _activePaymentStatus == 'paid' ||
+        status == 'paid' ||
+        status == 'en_route' ||
+        status == 'completed';
+  }
+
+  Future<void> _messageActiveCustomer() async {
+    final requestId = _activeRequestId;
+    final customerId = _activeCustomerId;
+    if (requestId == null || customerId == null || !_isActiveContactUnlocked) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Messaging unlocks after payment confirmation.')),
+      );
+      return;
+    }
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => ServiceChatScreen(
+          requestId: requestId,
+          peerUserId: customerId,
+          peerLabel: 'Customer',
+        ),
+      ),
+    );
+  }
+
+  Future<void> _callActiveCustomer() async {
+    final customerId = _activeCustomerId;
+    if (customerId == null || !_isActiveContactUnlocked) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Calling unlocks after payment confirmation.')),
+      );
+      return;
+    }
+
+    try {
+      final userDoc =
+          await FirebaseFirestore.instance.collection('users').doc(customerId).get();
+      final data = userDoc.data() ?? <String, dynamic>{};
+      final phone = (data['phoneNumber'] ?? data['phone'] ?? '').toString().trim();
+      if (phone.isEmpty) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Customer phone number is not available.')),
+        );
+        return;
+      }
+      final launched = await launchUrl(
+        Uri(scheme: 'tel', path: phone),
+        mode: LaunchMode.externalApplication,
+      );
+      if (!launched && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Could not open phone dialer.')),
+        );
+      }
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not open phone dialer.')),
+      );
+    }
+  }
+
+  Future<void> _promptProviderReview(String requestId) async {
+    final reviewed = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => ReviewScreen(
+          requestId: requestId,
+          providerName: 'Customer',
+          isCustomerReviewing: false,
+        ),
+      ),
+    );
+    if (reviewed == true) {
+      await AppReviewPrompt.requestAfterSuccessfulTransaction(requestId);
     }
   }
 
@@ -848,6 +953,32 @@ class _DriverScreenState extends State<DriverScreen> {
                         style: const TextStyle(
                           color: Color(0xFF22D3EE),
                           fontSize: 13,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+                if (_isActiveContactUnlocked && _activeCustomerId != null) ...[
+                  const SizedBox(height: 14),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed: _messageActiveCustomer,
+                          icon: const Icon(Icons.chat_bubble_outline),
+                          label: const Text('Message Customer'),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: ElevatedButton.icon(
+                          onPressed: _callActiveCustomer,
+                          icon: const Icon(Icons.phone),
+                          label: const Text('Call'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF16A34A),
+                            foregroundColor: Colors.white,
+                          ),
                         ),
                       ),
                     ],
