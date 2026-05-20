@@ -11,6 +11,7 @@ import 'boost_metrics_screen.dart';
 import 'transaction_tracking_screen.dart';
 import 'profile_settings_screen.dart';
 import 'help_screen.dart';
+import 'app_share_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -26,6 +27,7 @@ class _HomeScreenState extends State<HomeScreen> {
   static const String _moreProfileSettings = 'profile_settings';
   static const String _moreBoostMetrics = 'boost_metrics';
   static const String _moreTransactionHistory = 'transaction_history';
+  static const String _moreShareApp = 'share_app';
   static const String _moreFlowCheckpoint = 'flow_checkpoint';
   static const String _moreSignOut = 'sign_out';
 
@@ -156,6 +158,11 @@ class _HomeScreenState extends State<HomeScreen> {
       case _moreTransactionHistory:
         Navigator.of(context).push(
           MaterialPageRoute(builder: (_) => const TransactionTrackingScreen()),
+        );
+        break;
+      case _moreShareApp:
+        Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => const AppShareScreen()),
         );
         break;
       case _moreFlowCheckpoint:
@@ -320,6 +327,10 @@ class _HomeScreenState extends State<HomeScreen> {
               PopupMenuItem<String>(
                 value: _moreTransactionHistory,
                 child: Text('Transaction History'),
+              ),
+              PopupMenuItem<String>(
+                value: _moreShareApp,
+                child: Text('Share Boosstter'),
               ),
               PopupMenuItem<String>(
                 value: _moreFlowCheckpoint,
