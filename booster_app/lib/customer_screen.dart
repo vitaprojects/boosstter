@@ -881,6 +881,44 @@ class _CustomerScreenState extends State<CustomerScreen> {
     });
   }
 
+  Future<void> _openTowMakePicker() async {
+    _fetchVehicleTypes();
+    final selected = await _showVehicleOptionPicker(
+      title: 'Choose vehicle make',
+      options: _vehicleMakes,
+      selectedValue: _selectedVehicleMake,
+    );
+    if (selected == null || !mounted) return;
+    setState(() {
+      _showTowManualVehicle = false;
+      _selectedVehicleMake = selected;
+      _selectedVehicleModel = null;
+      _selectedTowVehicle = null;
+    });
+  }
+
+  Future<void> _openTowModelPicker() async {
+    final make = _selectedVehicleMake;
+    if (make == null) {
+      _showErrorSnackBar('Choose a vehicle make first', Icons.directions_car);
+      return;
+    }
+
+    _fetchVehicleTypes();
+    final models = _vehicleModels[make] ?? <String>[];
+    final selected = await _showVehicleOptionPicker(
+      title: 'Choose $make model',
+      options: models,
+      selectedValue: _selectedVehicleModel,
+    );
+    if (selected == null || !mounted) return;
+    setState(() {
+      _showTowManualVehicle = false;
+      _selectedVehicleModel = selected;
+      _selectedTowVehicle = '$make $selected';
+    });
+  }
+
   Future<String?> _showVehicleOptionPicker({
     required String title,
     required List<String> options,
@@ -4191,42 +4229,32 @@ class _CustomerScreenState extends State<CustomerScreen> {
               ),
               const SizedBox(height: 12),
               _isLoadingVehicleTypes
-                  ? const CircularProgressIndicator()
-                  : Row(children: [
-                      Expanded(
-                        child: DropdownButtonFormField<String>(
-                          value: _selectedVehicleMake,
-                          items: _vehicleMakes
-                              .map((make) => DropdownMenuItem<String>(value: make, child: Text(make)))
-                              .toList(),
-                          onChanged: (make) {
-                            setState(() {
-                              _selectedVehicleMake = make;
-                              _selectedVehicleModel = null;
-                            });
-                          },
-                          decoration: const InputDecoration(hintText: 'Make'),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: DropdownButtonFormField<String>(
-                          value: _selectedVehicleModel,
-                          items: (_selectedVehicleMake != null
-                                  ? _vehicleModels[_selectedVehicleMake] ?? []
-                                  : [])
-                              .map((model) => DropdownMenuItem<String>(value: model, child: Text(model)))
-                              .toList(),
-                          onChanged: (model) {
-                            setState(() {
-                              _selectedVehicleModel = model;
-                              _selectedTowVehicle = model;
-                            });
-                          },
-                          decoration: const InputDecoration(hintText: 'Model'),
-                        ),
-                      ),
-                    ]),
+                  ? const Padding(
+                      padding: EdgeInsets.only(bottom: 8),
+                      child: LinearProgressIndicator(),
+                    )
+                  : const SizedBox.shrink(),
+              Row(
+                children: [
+                  Expanded(
+                    child: _VehiclePickerButton(
+                      label: 'Make',
+                      value: _showTowManualVehicle ? null : _selectedVehicleMake,
+                      icon: Icons.badge_outlined,
+                      onTap: _openTowMakePicker,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: _VehiclePickerButton(
+                      label: 'Model',
+                      value: _showTowManualVehicle ? null : _selectedVehicleModel,
+                      icon: Icons.directions_car_outlined,
+                      onTap: _openTowModelPicker,
+                    ),
+                  ),
+                ],
+              ),
               const SizedBox(height: 10),
               TextButton.icon(
                 onPressed: () {
