@@ -26,8 +26,8 @@ class CustomerScreen extends StatefulWidget {
 
 class _CustomerScreenState extends State<CustomerScreen> {
   // Firestore vehicle types
-  List<String> _vehicleMakes = [];
-  Map<String, List<String>> _vehicleModels = {};
+  List<String> _vehicleMakes = _defaultVehicleMakes();
+  Map<String, List<String>> _vehicleModels = _defaultVehicleModels();
   String? _selectedVehicleMake;
   String? _selectedVehicleModel;
   bool _isLoadingVehicleTypes = false;
@@ -842,6 +842,91 @@ class _CustomerScreenState extends State<CustomerScreen> {
       plugType: _selectedBoostVehicleType == _electricVehicleType
           ? _selectedBoostPlugType
           : null,
+    );
+  }
+
+  Future<void> _openBoostMakePicker() async {
+    _fetchVehicleTypes();
+    final selected = await _showVehicleOptionPicker(
+      title: 'Choose car make',
+      options: _vehicleMakes,
+      selectedValue: _selectedVehicleMake,
+    );
+    if (selected == null || !mounted) return;
+    setState(() {
+      _showBoostManualVehicle = false;
+      _selectedVehicleMake = selected;
+      _selectedVehicleModel = null;
+    });
+  }
+
+  Future<void> _openBoostModelPicker() async {
+    final make = _selectedVehicleMake;
+    if (make == null) {
+      _showErrorSnackBar('Choose a car make first', Icons.directions_car);
+      return;
+    }
+
+    _fetchVehicleTypes();
+    final models = _vehicleModels[make] ?? <String>[];
+    final selected = await _showVehicleOptionPicker(
+      title: 'Choose $make model',
+      options: models,
+      selectedValue: _selectedVehicleModel,
+    );
+    if (selected == null || !mounted) return;
+    setState(() {
+      _showBoostManualVehicle = false;
+      _selectedVehicleModel = selected;
+    });
+  }
+
+  Future<String?> _showVehicleOptionPicker({
+    required String title,
+    required List<String> options,
+    String? selectedValue,
+  }) {
+    return showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) {
+        final sortedOptions = List<String>.from(options)..sort();
+        return SafeArea(
+          child: sortedOptions.isEmpty
+              ? Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Text(
+                    'No options available yet. Use manual entry below to add your car.',
+                    style: Theme.of(context).textTheme.bodyLarge,
+                  ),
+                )
+              : ListView(
+                  shrinkWrap: true,
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(20, 8, 20, 12),
+                      child: Text(
+                        title,
+                        style: Theme.of(context)
+                            .textTheme
+                            .titleLarge
+                            ?.copyWith(fontWeight: FontWeight.w800),
+                      ),
+                    ),
+                    ...sortedOptions.map((option) {
+                      final selected = option == selectedValue;
+                      return ListTile(
+                        title: Text(option),
+                        trailing: selected
+                            ? const Icon(Icons.check_circle, color: Color(0xFF5500FF))
+                            : null,
+                        onTap: () => Navigator.of(context).pop(option),
+                      );
+                    }),
+                  ],
+                ),
+        );
+      },
     );
   }
 
@@ -2771,61 +2856,36 @@ class _CustomerScreenState extends State<CustomerScreen> {
                           ),
                           const SizedBox(height: 14),
                           _isLoadingVehicleTypes
-                              ? const LinearProgressIndicator()
-                              : Row(children: [
-                                  Expanded(
-                                    child: DropdownButtonFormField<String>(
-                                      value: _showBoostManualVehicle ? null : _selectedVehicleMake,
-                                      items: _vehicleMakes
-                                          .map((make) => DropdownMenuItem<String>(
-                                                value: make,
-                                                child: Text(make),
-                                              ))
-                                          .toList(),
-                                      onTap: () {
-                                        _fetchVehicleTypes();
-                                      },
-                                      onChanged: (make) {
-                                        setState(() {
-                                          _showBoostManualVehicle = false;
-                                          _selectedVehicleMake = make;
-                                          _selectedVehicleModel = null;
-                                        });
-                                      },
-                                      decoration: const InputDecoration(
-                                        labelText: 'Make',
-                                        prefixIcon: Icon(Icons.badge_outlined),
-                                      ),
-                                    ),
-                                  ),
-                                  const SizedBox(width: 8),
-                                  Expanded(
-                                    child: DropdownButtonFormField<String>(
-                                      value: _showBoostManualVehicle ? null : _selectedVehicleModel,
-                                      items: (_selectedVehicleMake != null
-                                              ? _vehicleModels[_selectedVehicleMake] ?? []
-                                              : <String>[])
-                                          .map((model) => DropdownMenuItem<String>(
-                                                value: model,
-                                                child: Text(model),
-                                              ))
-                                          .toList(),
-                                      onTap: () {
-                                        _fetchVehicleTypes();
-                                      },
-                                      onChanged: (model) {
-                                        setState(() {
-                                          _showBoostManualVehicle = false;
-                                          _selectedVehicleModel = model;
-                                        });
-                                      },
-                                      decoration: const InputDecoration(
-                                        labelText: 'Model',
-                                        prefixIcon: Icon(Icons.drive_eta_outlined),
-                                      ),
-                                    ),
-                                  ),
-                                ]),
+                              ? const Padding(
+                                  padding: EdgeInsets.only(bottom: 8),
+                                  child: LinearProgressIndicator(),
+                                )
+                              : const SizedBox.shrink(),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: _VehiclePickerButton(
+                                  label: 'Make',
+                                  value: _showBoostManualVehicle
+                                      ? null
+                                      : _selectedVehicleMake,
+                                  icon: Icons.badge_outlined,
+                                  onTap: _openBoostMakePicker,
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: _VehiclePickerButton(
+                                  label: 'Model',
+                                  value: _showBoostManualVehicle
+                                      ? null
+                                      : _selectedVehicleModel,
+                                  icon: Icons.directions_car_outlined,
+                                  onTap: _openBoostModelPicker,
+                                ),
+                              ),
+                            ],
+                          ),
                           const SizedBox(height: 8),
                           TextButton.icon(
                             onPressed: () {
@@ -5882,6 +5942,18 @@ const Map<String, List<String>> _defaultVehicleDatabase = <String, List<String>>
   'Toyota': <String>['Camry', 'Corolla', 'Highlander', 'RAV4', 'Tacoma'],
   'Volkswagen': <String>['Atlas', 'Golf', 'Jetta', 'Passat', 'Tiguan'],
 };
+
+List<String> _defaultVehicleMakes() {
+  return _defaultVehicleDatabase.keys.toList()..sort();
+}
+
+Map<String, List<String>> _defaultVehicleModels() {
+  return <String, List<String>>{
+    for (final entry in _defaultVehicleDatabase.entries)
+      entry.key: List<String>.from(entry.value)..sort(),
+  };
+}
+
 const List<String> _towVehicleOptions = <String>[
   'Car Tow',
   'SUV Tow',
@@ -5977,6 +6049,75 @@ class _VehicleTypeSelector extends StatelessWidget {
           ),
         ],
       ],
+    );
+  }
+}
+
+class _VehiclePickerButton extends StatelessWidget {
+  const _VehiclePickerButton({
+    required this.label,
+    required this.value,
+    required this.icon,
+    required this.onTap,
+  });
+
+  final String label;
+  final String? value;
+  final IconData icon;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(14),
+      child: Container(
+        constraints: const BoxConstraints(minHeight: 68),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        decoration: BoxDecoration(
+          color: const Color(0xFFF3F4F6),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+            color: value == null ? Colors.transparent : const Color(0xFFBFD7FF),
+          ),
+        ),
+        child: Row(
+          children: [
+            Icon(icon, color: const Color(0xFF64748B), size: 22),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    label,
+                    style: const TextStyle(
+                      color: Color(0xFF64748B),
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    value ?? 'Select',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: value == null
+                          ? const Color(0xFF8A8A9A)
+                          : const Color(0xFF0F172A),
+                      fontSize: 16,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const Icon(Icons.keyboard_arrow_down, color: Color(0xFF94A3B8)),
+          ],
+        ),
+      ),
     );
   }
 }
